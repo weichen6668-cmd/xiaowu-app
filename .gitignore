@@ -1,0 +1,7 @@
+node_modules/
+mobile/node_modules/
+mobile/www/
+**/build/
+**/.gradle/
+.DS_Store
+._*

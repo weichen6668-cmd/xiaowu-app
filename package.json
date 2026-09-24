@@ -1,0 +1,87 @@
+{
+  "name": "desktop-mage",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "mobile"
+  ],
+  "description": "桌面法师 - 透明背景桌面数字人（ASR + LLM + TTS + 技能扩展）",
+  "main": "main.js",
+  "build": {
+    "appId": "com.desktop.mage",
+    "productName": "桌面法师",
+    "asar": true,
+    "asarUnpack": [
+      "tools/**",
+      "models/**",
+      "assets/models/**",
+      "skills/**",
+      "data/**",
+      "config.json",
+      "secrets.json",
+      "memory.json",
+      "skills-index.json",
+      "renderer/skills-market*.json*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "config.json",
+      "build.js",
+      "package.json",
+      "renderer/**/*",
+      "services/**/*",
+      "tools/**/*",
+      "assets/**/*",
+      "models/**/*",
+      "!models/llm/**/*",
+      "!secrets.json",
+      "!data/**/*",
+      "!**/*.log",
+      "!**/*.err.log"
+    ],
+    "win": {
+      "target": "portable"
+    },
+    "portable": {
+      "artifactName": "桌面法师-${version}-windows.exe"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.entertainment"
+    },
+    "dmg": {
+      "artifactName": "桌面法师-${version}-mac.dmg"
+    },
+    "electronLanguages": [
+      "zh-CN"
+    ]
+  },
+  "scripts": {
+    "build": "node build.js",
+    "lint": "eslint .",
+    "test": "node tests/run-all.js",
+    "start": "node build.js && \"node_modules/electron/dist/Electron.app/Contents/MacOS/Electron\" .",
+    "dev": "node build.js && electron .",
+    "dist": "node build.js && electron-builder --win portable",
+    "dist:clean": "node build.js && node tools/reset-config.js && electron-builder --win portable"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@gltf-transform/cli": "^4.5.0",
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.12",
+    "eslint": "^8.57.1"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.1",
+    "mqtt": "^5.16.0",
+    "three": "^0.180.0"
+  }
+}

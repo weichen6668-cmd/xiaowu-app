@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #12081f;
+  color: #f3efff;
+  overscroll-behavior: none;
+}
+
+body {
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 键盘弹起时输入条上移不遮挡（visualViewport 由 ChatPage 处理，这里兜底） */
+.input-dock {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
