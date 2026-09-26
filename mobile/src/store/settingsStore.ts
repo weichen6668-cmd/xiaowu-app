@@ -22,6 +22,7 @@ export function defaultConfig(userId: string, deviceId: string): UserConfig {
     ttsProvider: 'volc',
     ttsBaseUrl: 'https://openspeech.bytedance.com',
     ttsVoice: 'xiaowu_female',
+    ttsEnabled: true,
     lamportTs: 0,
     updatedAt: new Date().toISOString(),
     deviceIdLast: deviceId,

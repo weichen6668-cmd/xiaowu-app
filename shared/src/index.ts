@@ -9,4 +9,5 @@ export * from './tts-client';
 export * from './chat-orchestrator';
 export * from './skills-core';
 export * from './sync-protocol';
+export * from './remote-protocol';
 export * from './mock-providers';

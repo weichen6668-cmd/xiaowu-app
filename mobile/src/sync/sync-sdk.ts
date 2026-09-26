@@ -2,13 +2,15 @@
  * SyncSDK（FR-108）：outbox 批量上行、启动增量拉取、指数退避、op_id 幂等。
  * LWW 合并（pull 用 sync-protocol.lwwWins）。
  */
-import type { DataBackend, Device, Message, OplogEntry, Session, SyncSDK } from '@xw/shared';
+import type { DataBackend, Device, MemoryItem, Message, OplogEntry, Session, SyncSDK, TrajectoryEntry } from '@xw/shared';
 import { LamportClock, backoffMs, rowToOplog, lwwWins } from '@xw/shared';
 import {
   OutboxRepo,
   SyncCursor,
   SessionRepo,
   MessageRepo,
+  MemoryRepo,
+  TrajectoryRepo,
   markSynced,
   findRow,
 } from '../db/repo';
@@ -49,6 +51,33 @@ function rowToMessage(r: Record<string, unknown>): Message {
     lamportTs: Number(r.lamport_ts ?? 0),
     deleted: Boolean(r.deleted),
     createdAt: String(r.created_at),
+  };
+}
+
+function rowToMemory(r: Record<string, unknown>): MemoryItem {
+  return {
+    id: String(r.id),
+    userId: String(r.user_id),
+    deviceId: String(r.device_id ?? ''),
+    text: String(r.text ?? ''),
+    lamportTs: Number(r.lamport_ts ?? 0),
+    deleted: Boolean(r.deleted),
+    createdAt: String(r.created_at ?? ''),
+  };
+}
+
+function rowToTrajectory(r: Record<string, unknown>): TrajectoryEntry {
+  let steps: TrajectoryEntry['steps'] = [];
+  try { steps = JSON.parse(String(r.steps ?? r.steps_json ?? '[]')) as TrajectoryEntry['steps']; } catch { steps = []; }
+  return {
+    id: String(r.id),
+    userId: String(r.user_id),
+    deviceId: String(r.device_id ?? ''),
+    sessionId: r.session_id == null ? null : String(r.session_id),
+    steps,
+    lamportTs: Number(r.lamport_ts ?? 0),
+    deleted: Boolean(r.deleted),
+    createdAt: String(r.created_at ?? ''),
   };
 }
 
@@ -124,6 +153,46 @@ export function createSyncSDK(deps: SyncDeps): SyncSDK & { getClock(): LamportCl
           else await MessageRepo.upsertRemote(incoming as Message);
           merged += 1;
         }
+      }
+    }
+    // T04：memory / trajectory 合并分支（复用 lwwWins；oplog 新 API 可用时优先）
+    const be = deps.backend as unknown as {
+      syncPull?: (sinceLamport: number) => Promise<{ ops: Record<string, unknown>[]; latest: number }>;
+      listMemories?: () => Promise<Record<string, unknown>[]>;
+    };
+    if (be.syncPull) {
+      try {
+        const { ops } = await be.syncPull(0);
+        for (const op of ops) {
+          const entity = String(op.entity ?? '');
+          const payload = (op.payload ?? {}) as Record<string, unknown>;
+          const incomingMeta = { lamportTs: Number(op.lamportTs ?? 0), deviceId: String(op.deviceId ?? '') };
+          if (entity === 'memory') {
+            const incoming = rowToMemory({ ...payload, id: op.entityId, device_id: op.deviceId, lamport_ts: op.lamportTs });
+            const existing = await MemoryRepo.getById(incoming.id);
+            if (!existing || lwwWins(incomingMeta, { lamportTs: existing.lamportTs, deviceId: existing.deviceId })) {
+              await MemoryRepo.upsertRemote(incoming);
+              merged += 1;
+            }
+          } else if (entity === 'trajectory') {
+            const incoming = rowToTrajectory({ ...payload, id: op.entityId, device_id: op.deviceId, lamport_ts: op.lamportTs });
+            await TrajectoryRepo.upsertRemote(incoming);
+            merged += 1;
+          }
+        }
+      } catch (e) {
+        log.warn('pull memory/trajectory skipped', e);
+      }
+    } else if (be.listMemories) {
+      try {
+        const mems = await be.listMemories();
+        for (const r of mems) {
+          const incoming = rowToMemory(r);
+          await MemoryRepo.upsertRemote(incoming);
+          merged += 1;
+        }
+      } catch (e) {
+        log.warn('listMemories skipped', e);
       }
     }
     await SyncCursor.set(new Date().toISOString());

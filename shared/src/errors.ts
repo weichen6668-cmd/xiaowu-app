@@ -27,6 +27,14 @@ export const XW_ERR = {
   RECORD_FAIL: 'XW4002',
   ASR_FAIL: 'XW4003',
   TTS_FAIL: 'XW4004',
+  /** 远程遥控（双端互通） */
+  REMOTE_NOT_CONNECTED: 'XW5001',
+  REMOTE_PAIR_CODE_WRONG: 'XW5002',
+  REMOTE_TS_OUT_OF_WINDOW: 'XW5003',
+  REMOTE_NONCE_REPLAY: 'XW5004',
+  REMOTE_PREEMPTED: 'XW5005',
+  REMOTE_CMD_TIMEOUT: 'XW5006',
+  REMOTE_DANGER_DENIED: 'XW5007',
   /** 其他 */
   UNKNOWN: 'XW9001',
 } as const;
@@ -52,6 +60,13 @@ const DEFAULT_MSG: Record<string, string> = {
   [XW_ERR.RECORD_FAIL]: '录音失败',
   [XW_ERR.ASR_FAIL]: '语音识别失败',
   [XW_ERR.TTS_FAIL]: '语音合成失败',
+  [XW_ERR.REMOTE_NOT_CONNECTED]: '远程未连接，请先连接电脑',
+  [XW_ERR.REMOTE_PAIR_CODE_WRONG]: '配对码错误',
+  [XW_ERR.REMOTE_TS_OUT_OF_WINDOW]: '时间戳超窗，请校准设备时间',
+  [XW_ERR.REMOTE_NONCE_REPLAY]: '请求重放被拒',
+  [XW_ERR.REMOTE_PREEMPTED]: '遥控被抢占',
+  [XW_ERR.REMOTE_CMD_TIMEOUT]: '指令超时',
+  [XW_ERR.REMOTE_DANGER_DENIED]: '危险操作被拒绝',
   [XW_ERR.UNKNOWN]: '出错了，请重试',
 };
 

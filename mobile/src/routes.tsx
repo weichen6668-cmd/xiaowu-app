@@ -10,6 +10,8 @@ import { ChatPage } from './pages/ChatPage';
 import { SessionListPage } from './pages/SessionListPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ModelPickPage } from './pages/ModelPickPage';
+import DevicePage from './pages/DevicePage';
+import { OverlayGuidePage } from './pages/OverlayGuidePage';
 
 function RequireAuth({ children }: { children: React.ReactElement }): React.ReactElement {
   const user = useAuthStore((s) => s.user);
@@ -51,6 +53,22 @@ export function AppRoutes(): React.ReactElement {
         element={
           <RequireAuth>
             <ModelPickPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/devices"
+        element={
+          <RequireAuth>
+            <DevicePage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/overlay-guide"
+        element={
+          <RequireAuth>
+            <OverlayGuidePage />
           </RequireAuth>
         }
       />

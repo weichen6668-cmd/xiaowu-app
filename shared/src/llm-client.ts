@@ -9,13 +9,33 @@ import type { LlmClient, LLMReply, Msg, ProviderRow, ToolCall, ToolDef } from '.
 export const LLM_TIMEOUT_MS = 120 * 1000;
 
 function signalWithDefault(ext?: AbortSignal): AbortSignal {
-  const timeout = AbortSignal.timeout(LLM_TIMEOUT_MS);
-  if (!ext) return timeout;
-  // 外部取消信号 ∪ 默认超时：响应级取消即时生效，超时兜底保留
-  if (typeof (AbortSignal as unknown as { any?: unknown }).any === 'function') {
-    return (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([ext, timeout]);
+  // 优先 AbortSignal.timeout（内部 timer 不挂事件循环）；
+  // Android WebView 无 timeout/any 时退 AbortController+setTimeout 兜底（≤120s）
+  if (typeof AbortSignal.timeout === 'function') {
+    const timeout = AbortSignal.timeout(LLM_TIMEOUT_MS);
+    if (!ext) return timeout;
+    if (typeof (AbortSignal as unknown as { any?: unknown }).any === 'function') {
+      return (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([ext, timeout]);
+    }
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), LLM_TIMEOUT_MS);
+    const done = (): void => {
+      clearTimeout(timer);
+      ac.abort();
+    };
+    timeout.addEventListener('abort', done, { once: true });
+    if (ext.aborted) done();
+    else ext.addEventListener('abort', done, { once: true });
+    return ac.signal;
   }
-  return ext;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), LLM_TIMEOUT_MS);
+  ac.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
+  if (ext) {
+    if (ext.aborted) ac.abort();
+    else ext.addEventListener('abort', () => ac.abort(), { once: true });
+  }
+  return ac.signal;
 }
 
 function buildBody(messages: Msg[], tools: ToolDef[] | undefined, stream: boolean, model: string): Record<string, unknown> {

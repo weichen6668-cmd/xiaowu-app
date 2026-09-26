@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import type { AvatarRenderer } from '@xw/shared';
+import type { AvatarHandle } from '../avatar/avatar-loader';
 
 const FOV = 38;
 const CAM_DIST = 8;
@@ -28,6 +29,9 @@ export class ThreeStage implements AvatarRenderer {
   private raf = 0;
   private onReadyCb: MuxReady | null = null;
   private speaking = false;
+  /** T07 Q15：非标骨骼兜底摆动（无骨架时整体轻微摇摆/呼吸） */
+  private fallbackSway = false;
+  private fallbackSwayStart = 0;
   zoom = 1;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -83,6 +87,13 @@ export class ThreeStage implements AvatarRenderer {
         const t = performance.now() / 120;
         this.headNode.rotation.x = Math.sin(t) * 0.02;
       }
+      // Q15 兜底摆动：无骨架/非标骨骼 → 整体轻微摆动 + 呼吸缩放
+      if (this.fallbackSway) {
+        const t = (performance.now() - this.fallbackSwayStart) / 1000;
+        this.modelRoot.rotation.z = Math.sin(t * 1.6) * 0.03;
+        const b = this.zoom * (1 + Math.sin(t * 2.2) * 0.015);
+        this.modelRoot.scale.setScalar(b);
+      }
       this.renderer.render(this.scene, this.camera);
     };
     tick();
@@ -94,10 +105,12 @@ export class ThreeStage implements AvatarRenderer {
       this.mixer = null;
     }
     this.modelRoot.clear();
+    this.modelRoot.rotation.z = 0;
     this.actions = {};
     this.currentAction = null;
     this.currentClip = '';
     this.headNode = null;
+    this.fallbackSway = false;
   }
 
   async loadModel(url: string): Promise<void> {
@@ -109,12 +122,13 @@ export class ThreeStage implements AvatarRenderer {
     model.rotation.y = FACING;
     this.modelRoot.add(model);
 
-    // 适配尺寸：目标高度，底部对齐 y=0
+    // 适配尺寸：目标高度，X/Z 居中 + 底部对齐 y=0
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
     const scale = TARGET_HEIGHT / size.y;
     model.scale.setScalar(scale);
-    model.position.y = -box.min.y * scale;
+    const center = box.getCenter(new THREE.Vector3());
+    model.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
     this.zoom = 1;
 
     model.traverse((o) => {
@@ -129,6 +143,49 @@ export class ThreeStage implements AvatarRenderer {
       this.playClip('preset:biped:idle');
     });
     this.playClip('preset:biped:idle');
+    this.onReadyCb?.(true);
+  }
+
+  /** T07：自定义形象（AvatarHandle——GLB/GLTF/FBX/VRM 统一产物）挂载。
+   *  居中/归一化与 loadModel 完全一致（X/Z 居中 + 底部对齐 y=0），勿回退。 */
+  async loadAvatarHandle(handle: AvatarHandle): Promise<void> {
+    this.disposeModel();
+    this.fallbackSway = false;
+    const model = handle.scene;
+    model.rotation.y = FACING;
+    this.modelRoot.add(model);
+
+    // 适配尺寸：目标高度，X/Z 居中 + 底部对齐 y=0（与 loadModel 同段落，保持一致）
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    const scale = TARGET_HEIGHT / size.y;
+    model.scale.setScalar(scale);
+    const center = box.getCenter(new THREE.Vector3());
+    model.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+    this.zoom = 1;
+
+    model.traverse((o) => {
+      if (o.name === 'Head') this.headNode = o;
+    });
+
+    // Q15：非标骨骼兜底——无骨架时不装配 mixer，走整体摆动/呼吸兜底动效
+    if (!handle.hasSkeleton) {
+      this.fallbackSway = true;
+      this.fallbackSwayStart = performance.now();
+      this.onReadyCb?.(true);
+      return;
+    }
+
+    this.mixer = new THREE.AnimationMixer(model);
+    handle.animations.forEach((clip) => {
+      this.actions[clip.name] = this.mixer!.clipAction(clip);
+    });
+    if (handle.animations.length) {
+      this.mixer.addEventListener('finished', () => {
+        this.playClip('idle');
+      });
+      this.playClip('idle');
+    }
     this.onReadyCb?.(true);
   }
 

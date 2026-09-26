@@ -73,6 +73,7 @@ export class SupabaseBackend implements DataBackend {
       tts_provider: cfg.ttsProvider,
       tts_base_url: cfg.ttsBaseUrl,
       tts_voice: cfg.ttsVoice,
+      tts_enabled: cfg.ttsEnabled === false ? 0 : 1,
       lamport_ts: cfg.lamportTs,
       updated_at: cfg.updatedAt,
     };
@@ -104,6 +105,7 @@ export class SupabaseBackend implements DataBackend {
       ttsProvider: String(r.tts_provider ?? 'volc'),
       ttsBaseUrl: String(r.tts_base_url ?? ''),
       ttsVoice: String(r.tts_voice ?? 'xiaowu_female'),
+      ttsEnabled: r.tts_enabled == null ? true : Number(r.tts_enabled) !== 0,
       lamportTs: Number(r.lamport_ts ?? 0),
       updatedAt: String(r.updated_at ?? new Date().toISOString()),
       deviceIdLast: String(r.device_id_last ?? ''),

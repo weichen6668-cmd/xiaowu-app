@@ -1,4 +1,6 @@
 apply plugin: 'com.android.application'
+// T06：overlay 组件 Kotlin（kotlin-android；stdlib 由插件自动带入）
+apply plugin: 'kotlin-android'
 
 android {
     namespace "com.xiaowu.mage"

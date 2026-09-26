@@ -37,6 +37,8 @@ function delay(ms = 120): Promise<void> {
 
 export class MockBackend implements DataBackend {
   private db: MockDbShape = emptyDb();
+  /** created_at 严格单调游标（防同毫秒并列——踢最旧在并列时会误踢，见 registerDevice） */
+  private lastDeviceTs = 0;
 
   constructor() {
     try {
@@ -129,6 +131,7 @@ export class MockBackend implements DataBackend {
       tts_provider: cfg.ttsProvider,
       tts_base_url: cfg.ttsBaseUrl,
       tts_voice: cfg.ttsVoice,
+      tts_enabled: cfg.ttsEnabled === false ? 0 : 1,
       lamport_ts: cfg.lamportTs,
       updated_at: cfg.updatedAt,
     };
@@ -152,6 +155,7 @@ export class MockBackend implements DataBackend {
       ttsProvider: String(row.tts_provider ?? 'volc'),
       ttsBaseUrl: String(row.tts_base_url ?? ''),
       ttsVoice: String(row.tts_voice ?? 'xiaowu_female'),
+      ttsEnabled: row.tts_enabled == null ? true : Number(row.tts_enabled) !== 0,
       lamportTs: Number(row.lamport_ts ?? 0),
       updatedAt: String(row.updated_at ?? new Date().toISOString()),
       deviceIdLast: String(row.device_id_last ?? ''),
@@ -177,6 +181,8 @@ export class MockBackend implements DataBackend {
     const cur = this.db.currentUser;
     if (!cur) throw new Error('未登录');
     // Q3：上限 5 台，踢 created_at 最早
+    // flaky 根因加固：created_at 严格单调（同毫秒并列时 localeCompare 并列、踢谁不定），
+    // 用 lastDeviceTs 游标保证「最早」判定无并列（快速连注/高负载 timer 合并均稳）。
     const mine = this.db.devices
       .filter((d) => d.user_id === cur.userId)
       .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
@@ -184,7 +190,9 @@ export class MockBackend implements DataBackend {
       const evict = mine[0];
       this.db.devices = this.db.devices.filter((d) => d.id !== evict.id);
     }
-    const now = new Date().toISOString();
+    const nowMs = Math.max(Date.now(), this.lastDeviceTs + 1);
+    this.lastDeviceTs = nowMs;
+    const now = new Date(nowMs).toISOString();
     const dev: Device = {
       id: uuid(),
       userId: cur.userId,

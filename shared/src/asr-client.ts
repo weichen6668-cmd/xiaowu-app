@@ -79,7 +79,7 @@ export function createAsrClient(
         const baseURL = (a.baseURL || '').replace(/\/$/, '');
         const form = new FormData();
         const ext = format === 'pcm' ? 'pcm' : 'wav';
-        form.append('file', new Blob([wav], { type: 'audio/wav' }), `audio.${ext}`);
+        form.append('file', new Blob([wav.slice().buffer as ArrayBuffer], { type: 'audio/wav' }), `audio.${ext}`);
         form.append('model', a.model || 'whisper-1');
         const resp = await fetch(baseURL + '/audio/transcriptions', {
           method: 'POST',

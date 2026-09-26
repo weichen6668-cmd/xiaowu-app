@@ -5,9 +5,15 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
-import { useSettingsStore } from '../store/settingsStore';
+import { useSettingsStore, readApiKey } from '../store/settingsStore';
+import { useProfileStore, type ProfileKind } from '../store/profileStore';
+import { testLlm, testAsrTts } from '../services/link-test';
+import { ProfileManager } from '../components/ProfileManager';
 import { getDataBackend, getSyncSDK } from '../platform/runtime';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { useDeviceStore } from '../store/deviceStore';
+import { useRemoteStore } from '../store/remoteStore';
+import { useOverlayStore } from '../store/overlayStore';
 import type { UserConfig } from '@xw/shared';
 
 type KeyKind = 'llm' | 'asr' | 'tts';
@@ -25,9 +31,26 @@ export function SettingsPage(): React.ReactElement {
   const [bindCode, setBindCode] = useState('');
   const [bindMsg, setBindMsg] = useState('');
   const canBindPhone = !!getDataBackend().bindPhone;
+  // 互通状态（T05）
+  const devices = useDeviceStore((s) => s.devices);
+  const mqttConnected = useDeviceStore((s) => s.mqttConnected);
+  // T06 桌面悬浮（仅 Android 展示；iOS/Web supported=false 隐藏）
+  const ovSupported = useOverlayStore((s) => s.supported);
+  const ovForm = useOverlayStore((s) => s.form);
+  const ovPowerSave = useOverlayStore((s) => s.powerSave);
+  const ovThrottled = useOverlayStore((s) => s.throttled);
+  const { setForm: setOvForm, setPowerSave } = useOverlayStore();
+  // T05 扩展①：测试连接结果（「✓ 连通 123ms」/失败原因）
+  const [testMsg, setTestMsg] = useState<Record<KeyKind, string>>({ llm: '', asr: '', tts: '' });
+  const [testing, setTesting] = useState<Record<KeyKind, boolean>>({ llm: false, asr: false, tts: false });
+  // T05 扩展②：自定义 API 档案（下拉切换）
+  const profiles = useProfileStore((s) => s.profiles);
+  const active = useProfileStore((s) => s.active);
+  const { loadAll, setActive, readProfileKey, current } = useProfileStore();
 
   useEffect(() => {
     if (user) void load(user.userId, config?.deviceId || 'dev');
+    void loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
@@ -51,6 +74,40 @@ export function SettingsPage(): React.ReactElement {
     setKeyDraft({ ...keyDraft, [k]: '' });
     setSaved(k);
     setTimeout(() => setSaved(''), 1500);
+  };
+
+  /** T05 扩展①：测试连接——key 只瞬时读出入参，禁止进日志/结果文案 */
+  const onTest = async (k: KeyKind) => {
+    setTesting((t) => ({ ...t, [k]: true }));
+    setTestMsg((m) => ({ ...m, [k]: '探测中…' }));
+    try {
+      const c = config;
+      const key = await readApiKey(k);
+      const r =
+        k === 'llm'
+          ? await testLlm(c?.llmBaseUrl || '', key, c?.llmModel || '')
+          : k === 'asr'
+            ? await testAsrTts(c?.asrBaseUrl || '', key, 'asr')
+            : await testAsrTts(c?.ttsBaseUrl || '', key, 'tts');
+      setTestMsg((m) => ({
+        ...m,
+        [k]: r.ok ? `✓ 连通 ${r.ms}ms（${r.detail || ''}）` : `✗ ${r.reason || '连接失败'}`,
+      }));
+    } catch (e) {
+      setTestMsg((m) => ({ ...m, [k]: '✗ ' + ((e as Error).message || '测试异常').slice(0, 60) }));
+    } finally {
+      setTesting((t) => ({ ...t, [k]: false }));
+    }
+  };
+
+  /** T05 扩展②：切自定义档案——三区统一应用该档案的 baseUrl/model/voice（key 不动，走 Keystore 引用） */
+  const onPickProfile = async (k: KeyKind, id: string) => {
+    await setActive(k as ProfileKind, id);
+    const p = current(k as ProfileKind);
+    if (!p) return;
+    if (k === 'llm') patch({ llmProvider: 'custom', llmBaseUrl: p.baseUrl, llmModel: p.model });
+    else if (k === 'asr') patch({ asrProvider: 'openai', asrBaseUrl: p.baseUrl });
+    else patch({ ttsProvider: 'openai', ttsBaseUrl: p.baseUrl, ttsVoice: p.voice || p.model });
   };
 
   // 绑定手机：发码 + 绑定（xiaowu 后端）
@@ -195,6 +252,33 @@ export function SettingsPage(): React.ReactElement {
             value={config?.llmModel || ''}
             onChange={(e) => patch({ llmModel: e.target.value })}
           />
+          {profiles.some((p) => p.kind === 'llm') ? (
+            <select
+              className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs"
+              value={active.llm || ''}
+              onChange={(e) => void onPickProfile('llm', e.target.value)}
+            >
+              <option value="">— 选择自定义档案 —</option>
+              {profiles.filter((p) => p.kind === 'llm').map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <div className="flex items-center gap-2 mb-3">
+            <button
+              type="button"
+              className="h-8 px-3 rounded bg-white/10 text-xs disabled:opacity-40"
+              disabled={testing.llm}
+              onClick={() => void onTest('llm')}
+            >
+              测试连接
+            </button>
+            <span className={`text-xs ${testMsg.llm.startsWith('✓') ? 'text-emerald-300' : testMsg.llm.startsWith('✗') ? 'text-red-300' : 'opacity-70'}`}>
+              {testMsg.llm}
+            </span>
+          </div>
 
           <p className="mb-1 font-medium">ASR</p>
           <select
@@ -212,6 +296,33 @@ export function SettingsPage(): React.ReactElement {
             value={config?.asrBaseUrl || ''}
             onChange={(e) => patch({ asrBaseUrl: e.target.value })}
           />
+          {profiles.some((p) => p.kind === 'asr') ? (
+            <select
+              className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs"
+              value={active.asr || ''}
+              onChange={(e) => void onPickProfile('asr', e.target.value)}
+            >
+              <option value="">— 选择自定义档案 —</option>
+              {profiles.filter((p) => p.kind === 'asr').map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <div className="flex items-center gap-2 mb-3">
+            <button
+              type="button"
+              className="h-8 px-3 rounded bg-white/10 text-xs disabled:opacity-40"
+              disabled={testing.asr}
+              onClick={() => void onTest('asr')}
+            >
+              测试连接
+            </button>
+            <span className={`text-xs ${testMsg.asr.startsWith('✓') ? 'text-emerald-300' : testMsg.asr.startsWith('✗') ? 'text-red-300' : 'opacity-70'}`}>
+              {testMsg.asr}
+            </span>
+          </div>
 
           <p className="mb-1 font-medium">TTS</p>
           <select
@@ -235,13 +346,127 @@ export function SettingsPage(): React.ReactElement {
             value={config?.ttsVoice || ''}
             onChange={(e) => patch({ ttsVoice: e.target.value })}
           />
+          {profiles.some((p) => p.kind === 'tts') ? (
+            <select
+              className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs"
+              value={active.tts || ''}
+              onChange={(e) => void onPickProfile('tts', e.target.value)}
+            >
+              <option value="">— 选择自定义档案 —</option>
+              {profiles.filter((p) => p.kind === 'tts').map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <div className="flex items-center gap-2 mb-3">
+            <button
+              type="button"
+              className="h-8 px-3 rounded bg-white/10 text-xs disabled:opacity-40"
+              disabled={testing.tts}
+              onClick={() => void onTest('tts')}
+            >
+              测试连接
+            </button>
+            <span className={`text-xs ${testMsg.tts.startsWith('✓') ? 'text-emerald-300' : testMsg.tts.startsWith('✗') ? 'text-red-300' : 'opacity-70'}`}>
+              {testMsg.tts}
+            </span>
+          </div>
+          {/* 语音播报开关（默认开；关闭后发消息不播报，文字照常显示） */}
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs opacity-70">语音播报</span>
+            <button
+              type="button"
+              className={`w-12 h-7 rounded-full transition-colors ${config?.ttsEnabled !== false ? 'bg-brand' : 'bg-white/20'}`}
+              onClick={() => patch({ ttsEnabled: config?.ttsEnabled === false })}
+            >
+              <span
+                className={`block w-6 h-6 m-0.5 rounded-full bg-white transition-transform ${config?.ttsEnabled !== false ? 'translate-x-5' : ''}`}
+              />
+            </button>
+          </div>
 
           {/* API Key 仅本地 Keystore */}
           <p className="mb-1 font-medium">API Key（仅本机 Keystore，不上云）</p>
           {keyRow('llm', 'LLM', hasLlmKey)}
           {keyRow('asr', 'ASR', hasAsrKey)}
           {keyRow('tts', 'TTS', hasTtsKey)}
+
+          {/* T05 扩展②：多自定义 API 命名档案（key 按档案存 Keystore 引用） */}
+          <div className="mt-3">
+            <ProfileManager />
+          </div>
         </section>
+
+        {/* 双端互通（T05）：设备管理入口 + MQTT 状态 + 同步说明 */}
+        <section>
+          <h3 className="text-xs opacity-50 mb-2">── 互通 ──</h3>
+          <button
+            type="button"
+            className="w-full mb-2 rounded-lg bg-white/10 px-3 py-2 text-sm text-left"
+            onClick={() => nav('/devices')}
+          >
+            💻 设备管理（{devices.length} 台 · 上限 5 台）→
+          </button>
+          <p className="text-xs opacity-70 mb-1">
+            遥控通道：{mqttConnected ? '🟢 已连接' : '⚪ 未连接'}（配对码仅存电脑端，16 位配对）
+          </p>
+          <p className="text-xs opacity-70 mb-1">
+            数据同步：会话/消息/记忆/配置 LWW 双向（云端 oplog 幂等）
+          </p>
+          <p className="text-xs text-amber-300/80 leading-relaxed">
+            ℹ️ 同步冲突按 Lamport 时间合并（平手比设备号）；危险操作需手机确认，30 秒未确认自动拒绝。
+          </p>
+        </section>
+
+        {/* 桌面悬浮（T06，FR-301~307）：仅 Android；iOS 隐藏入口（FR-317 归 P2） */}
+        {ovSupported ? (
+          <section>
+            <h3 className="text-xs opacity-50 mb-2">── 桌面悬浮 ──</h3>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs opacity-70">形态</span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className={`px-3 py-1 rounded text-xs ${ovForm === 'ball' ? 'bg-brand' : 'bg-white/10'}`}
+                  onClick={() => void setOvForm('ball')}
+                >
+                  悬浮球
+                </button>
+                <button
+                  type="button"
+                  className={`px-3 py-1 rounded text-xs ${ovForm === 'pet' ? 'bg-brand' : 'bg-white/10'}`}
+                  onClick={() => void setOvForm('pet')}
+                >
+                  桌宠小窗
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs opacity-70">
+                省电模式{ovThrottled && !ovPowerSave ? '（过热/低电自动降级中）' : ''}
+              </span>
+              <button
+                type="button"
+                className={`w-12 h-7 rounded-full transition-colors ${ovPowerSave ? 'bg-brand' : 'bg-white/20'}`}
+                onClick={() => void setPowerSave(!ovPowerSave)}
+              >
+                <span className={`block w-6 h-6 m-0.5 rounded-full bg-white transition-transform ${ovPowerSave ? 'translate-x-5' : ''}`} />
+              </button>
+            </div>
+            <button
+              type="button"
+              className="w-full rounded-lg bg-white/10 px-3 py-2 text-sm text-left"
+              onClick={() => nav('/overlay-guide')}
+            >
+              🎈 权限与使用引导（首次开启必看）→
+            </button>
+            <p className="mt-2 text-xs text-amber-300/80 leading-relaxed">
+              ℹ️ RAM&lt;4GB 默认省电（8fps）；&gt;40℃ 或电量 &lt;20% 自动降级，手动开关最高优先。
+            </p>
+          </section>
+        ) : null}
 
         {/* 关于 */}
         <section>

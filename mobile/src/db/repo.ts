@@ -3,7 +3,7 @@
  * 语义对齐 services/sessions.js（桌面 JSON 版），存储换 SQLite。
  * 全部 CRUD 走 @capacitor-community/sqlite；Web 预览下走内存 Map 降级（dev/mock 可跑）。
  */
-import type { LocalOutbox, Message, Session, UserConfig } from '@xw/shared';
+import type { LocalOutbox, MemoryItem, Message, Session, TrajectoryEntry, UserConfig } from '@xw/shared';
 import { SCHEMA_VERSION, allDdl } from './schema';
 
 type SqlRow = Record<string, unknown>;
@@ -181,7 +181,11 @@ export async function openDb(): Promise<SqlExec> {
       await sqlite.open({ database: 'xiaowu' });
       db = {
         async run(sql, params = []) {
-          await sqlite.execute({ database: 'xiaowu', statements: sql, values: [params as never[]] });
+          // T05S 根因修复：必须用 run({statement, values}) 绑参。
+          // execute({statements}) 的 capSQLiteExecuteOptions 没有 values 字段——
+          // 传了也会被插件静默丢弃，SQL 的 ? 全绑 NULL，user_config.user_id 落 NULL，
+          // 启动 get(userId) 查不到 → 默认值覆盖用户改动（设置保存丢失）。
+          await sqlite.run({ database: 'xiaowu', statement: sql, values: params as never[] });
         },
         async query(sql, params = []) {
           const r = await sqlite.query({ database: 'xiaowu', statement: sql, values: params as never[] });
@@ -265,6 +269,7 @@ function rowToConfig(r: SqlRow): UserConfig {
     ttsProvider: String(r.tts_provider ?? 'volc'),
     ttsBaseUrl: String(r.tts_base_url ?? ''),
     ttsVoice: String(r.tts_voice ?? 'xiaowu_female'),
+    ttsEnabled: r.tts_enabled == null ? true : Number(r.tts_enabled) !== 0,
     lamportTs: Number(r.lamport_ts ?? 0),
     updatedAt: String(r.updated_at ?? nowIso()),
     deviceIdLast: String(r.device_id_last ?? ''),
@@ -436,9 +441,9 @@ export const ConfigRepo = {
     await d.run(
       `insert or replace into user_config
        (user_id, device_id, avatar_model, llm_provider, llm_base_url, llm_model,
-        asr_provider, asr_base_url, tts_provider, tts_base_url, tts_voice,
+        asr_provider, asr_base_url, tts_provider, tts_base_url, tts_voice, tts_enabled,
         lamport_ts, updated_at, device_id_last, dirty)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         cfg.userId,
         cfg.deviceId,
@@ -451,6 +456,7 @@ export const ConfigRepo = {
         cfg.ttsProvider,
         cfg.ttsBaseUrl,
         cfg.ttsVoice,
+        cfg.ttsEnabled === false ? 0 : 1,
         cfg.lamportTs,
         cfg.updatedAt,
         cfg.deviceIdLast,
@@ -545,3 +551,105 @@ export async function findRow(table: 'sessions' | 'messages', id: string): Promi
   const rows = await d.query(`select * from ${table} where id = ?`, [id]);
   return rows.length ? rows[0] : null;
 }
+
+/* ============ v2 新增：MemoryRepo / TrajectoryRepo（LWW + tombstone） ============ */
+
+function rowToMemory(r: SqlRow): MemoryItem {
+  return {
+    id: String(r.id),
+    userId: String(r.user_id),
+    deviceId: String(r.device_id ?? ''),
+    text: String(r.text ?? ''),
+    lamportTs: Number(r.lamport_ts ?? 0),
+    deleted: Number(r.deleted ?? 0) !== 0,
+    createdAt: String(r.created_at ?? ''),
+  };
+}
+
+function rowToTrajectory(r: SqlRow): TrajectoryEntry {
+  let steps: TrajectoryEntry['steps'] = [];
+  try { steps = JSON.parse(String(r.steps_json ?? '[]')) as TrajectoryEntry['steps']; } catch { steps = []; }
+  return {
+    id: String(r.id),
+    userId: String(r.user_id),
+    deviceId: String(r.device_id ?? ''),
+    sessionId: r.session_id == null ? null : String(r.session_id),
+    steps,
+    lamportTs: Number(r.lamport_ts ?? 0),
+    deleted: Number(r.deleted ?? 0) !== 0,
+    createdAt: String(r.created_at ?? ''),
+  };
+}
+
+export const MemoryRepo = {
+  async list(userId: string): Promise<MemoryItem[]> {
+    const d = await openDb();
+    const rows = await d.query(
+      'select * from memories where user_id = ? and deleted = 0 order by lamport_ts desc, created_at desc limit 500',
+      [userId],
+    );
+    return rows.map(rowToMemory);
+  },
+
+  /** 按 id 查（LWW 合并判定用，含 tombstone） */
+  async getById(id: string): Promise<MemoryItem | null> {
+    const d = await openDb();
+    const rows = await d.query('select * from memories where id = ?', [id]);
+    return rows.length ? rowToMemory(rows[0]) : null;
+  },
+
+  async upsertLocal(m: MemoryItem): Promise<void> {
+    const d = await openDb();
+    await d.run(
+      `insert or replace into memories (id, user_id, device_id, text, lamport_ts, deleted, created_at, dirty)
+       values (?, ?, ?, ?, ?, ?, ?, 1)`,
+      [m.id, m.userId, m.deviceId, m.text, m.lamportTs, m.deleted ? 1 : 0, m.createdAt],
+    );
+  },
+
+  /** tombstone 软删 */
+  async softDelete(id: string): Promise<void> {
+    const d = await openDb();
+    await d.run('update memories set deleted = 1, dirty = 1 where id = ?', [id]);
+  },
+
+  /** 云端合并落点（LWW 已由 sync 层判定） */
+  async upsertRemote(m: MemoryItem): Promise<void> {
+    const d = await openDb();
+    await d.run(
+      `insert or replace into memories (id, user_id, device_id, text, lamport_ts, deleted, created_at, dirty, last_synced_at)
+       values (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      [m.id, m.userId, m.deviceId, m.text, m.lamportTs, m.deleted ? 1 : 0, m.createdAt, nowIso()],
+    );
+  },
+};
+
+export const TrajectoryRepo = {
+  async listBySession(sessionId: string): Promise<TrajectoryEntry[]> {
+    const d = await openDb();
+    const rows = await d.query(
+      'select * from trajectories where session_id = ? and deleted = 0 order by lamport_ts desc limit 200',
+      [sessionId],
+    );
+    return rows.map(rowToTrajectory);
+  },
+
+  async upsertLocal(t: TrajectoryEntry): Promise<void> {
+    const d = await openDb();
+    await d.run(
+      `insert or replace into trajectories (id, user_id, device_id, session_id, steps_json, lamport_ts, deleted, created_at, dirty)
+       values (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      [t.id, t.userId, t.deviceId, t.sessionId, JSON.stringify(t.steps), t.lamportTs, t.deleted ? 1 : 0, t.createdAt],
+    );
+  },
+
+  /** 云端合并落点（LWW 已由 sync 层判定） */
+  async upsertRemote(t: TrajectoryEntry): Promise<void> {
+    const d = await openDb();
+    await d.run(
+      `insert or replace into trajectories (id, user_id, device_id, session_id, steps_json, lamport_ts, deleted, created_at, dirty, last_synced_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      [t.id, t.userId, t.deviceId, t.sessionId, JSON.stringify(t.steps), t.lamportTs, t.deleted ? 1 : 0, t.createdAt, nowIso()],
+    );
+  },
+};

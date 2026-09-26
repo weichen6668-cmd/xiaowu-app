@@ -60,6 +60,8 @@ export const secureStore: SecureStore = {
 export const SS_KEYS = {
   DEVICE_ID: 'device_id',
   AUTH_SESSION: 'auth_session',
+  ECS_TOKEN: 'ecs_token',
+  ECS_USER: 'ecs_user',
   LLM_API_KEY: 'llm_api_key',
   ASR_API_KEY: 'asr_api_key',
   TTS_API_KEY: 'tts_api_key',

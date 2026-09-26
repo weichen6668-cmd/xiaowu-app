@@ -44,10 +44,34 @@ export interface Message {
   createdAt: string;
 }
 
+/* ============ T07 形象规格（FR-304/305；§7 共享知识 1：仅元数据进 oplog LWW） ============ */
+
+export type AvatarForm = '3d' | '2d' | 'live2d' | 'video';
+export type AvatarKind = 'glb' | 'gltf' | 'fbx' | 'vrm' | 'png' | 'webm';
+
+export interface AvatarSpec {
+  form: AvatarForm;
+  kind: AvatarKind;
+  /** app 沙箱本地 URI（P2 FR-313 云分发换 oss://{hash}，签名不变） */
+  uri: string;
+  /** sha256 前 16 hex（去重键） */
+  hash: string;
+  /** 展示缩放（非标骨骼兜底参数，Q15） */
+  scale: number;
+  /** 垂直偏移（归一化后微调） */
+  offsetY: number;
+  /** 动作名 → clip 名映射（FBX 首 clip / GLB 多 clip；可手改，Q15） */
+  clipMap?: Record<string, string>;
+  /** 显示名（形象库卡用） */
+  name?: string;
+}
+
 export interface UserConfig {
   userId: string;
   deviceId: string;
   avatarModel: 'mage-a' | 'mage-b';
+  /** T07 形象元数据（FR-305/§7 共享知识 1：资源本体不同步，仅元数据走 oplog LWW） */
+  avatarSpec?: AvatarSpec | null;
   llmProvider: string;
   llmBaseUrl: string;
   llmModel: string;
@@ -56,6 +80,8 @@ export interface UserConfig {
   ttsProvider: string;
   ttsBaseUrl: string;
   ttsVoice: string;
+  /** 语音播报开关（默认 true；false 时文字照常显示、不播报） */
+  ttsEnabled: boolean;
   lamportTs: number;
   updatedAt: string;
   deviceIdLast: string;
@@ -69,10 +95,59 @@ export interface Device {
   lastSeenAt: string;
 }
 
+/** 双端互通设备信息（/api/devices） */
+export interface DeviceInfo {
+  id: string;
+  userId: string;
+  /** 如「gorgeous 的 Mac mini」 */
+  deviceName: string;
+  os: string;
+  /** MQTT 房间 */
+  room: string;
+  online: boolean;
+  lastSeenAt: string;
+}
+
+/** 长期记忆条目（LWW + tombstone） */
+export interface MemoryItem {
+  id: string;
+  userId: string;
+  deviceId: string;
+  /** 长期偏好条目 */
+  text: string;
+  lamportTs: number;
+  deleted: boolean;
+  createdAt: string;
+}
+
+/** 轨迹步骤（脱敏摘要） */
+export interface TrajectoryStep {
+  seq: number;
+  /** 如 run_shell / click_on */
+  tool: string;
+  /** 脱敏摘要（凭据打码） */
+  argsSummary: string;
+  resultSummary: string;
+  ms: number;
+}
+
+/** 任务轨迹（LWW + tombstone） */
+export interface TrajectoryEntry {
+  id: string;
+  userId: string;
+  /** 产生轨迹的设备（通常为电脑） */
+  deviceId: string;
+  sessionId: string | null;
+  steps: TrajectoryStep[];
+  lamportTs: number;
+  deleted: boolean;
+  createdAt: string;
+}
+
 /** 本地待传队列（LocalOutbox 表） */
 export interface LocalOutbox {
   opId: string;
-  entity: 'session' | 'message' | 'user_config';
+  entity: 'session' | 'message' | 'user_config' | 'memory' | 'trajectory';
   entityId: string;
   action: 'upsert' | 'delete';
   payloadJson: string;
@@ -85,7 +160,7 @@ export interface OplogEntry {
   opId: string;
   deviceId: string;
   lamportTs: number;
-  entity: 'session' | 'message' | 'user_config';
+  entity: 'session' | 'message' | 'user_config' | 'memory' | 'trajectory';
   entityId: string;
   action: 'upsert' | 'delete';
   payload: Record<string, unknown>;

@@ -4,7 +4,7 @@
  * M2 预留三列：device_id / lamport_ts / deleted。
  * 迁移版本号 SCHEMA_VERSION 变更时执行增量 DDL。
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** 本地四张表 DDL（含 outbox） */
 export const DDL: string[] = [
@@ -46,6 +46,7 @@ export const DDL: string[] = [
     tts_provider  text not null default 'volc',
     tts_base_url  text not null default 'https://openspeech.bytedance.com',
     tts_voice     text not null default 'xiaowu_female',
+    tts_enabled   integer not null default 1,
     lamport_ts    integer not null default 0,
     updated_at    text not null,
     device_id_last text not null default '',
@@ -62,9 +63,35 @@ export const DDL: string[] = [
     lamport_ts  integer not null default 0,
     attempts    integer not null default 0
   )`,
+  /* ===== v2 新增：memories / trajectories（LWW + tombstone，M2 双端互通） ===== */
+  `create table if not exists memories (
+    id          text primary key,
+    user_id     text not null,
+    device_id   text not null default '',
+    text        text not null default '',
+    lamport_ts  integer not null default 0,
+    deleted     integer not null default 0,
+    created_at  text not null,
+    dirty       integer not null default 1,
+    last_synced_at text
+  )`,
+  `create table if not exists trajectories (
+    id          text primary key,
+    user_id     text not null,
+    device_id   text not null default '',
+    session_id  text,
+    steps_json  text not null default '[]',
+    lamport_ts  integer not null default 0,
+    deleted     integer not null default 0,
+    created_at  text not null,
+    dirty       integer not null default 1,
+    last_synced_at text
+  )`,
   `create index if not exists idx_sessions_user_updated on sessions (user_id, updated_at desc)`,
   `create index if not exists idx_messages_session on messages (session_id, created_at)`,
   `create index if not exists idx_outbox_lamport on local_outbox (lamport_ts)`,
+  `create index if not exists idx_memories_user on memories (user_id, lamport_ts)`,
+  `create index if not exists idx_trajectories_user on trajectories (user_id, lamport_ts)`,
 ];
 
 /** 版本迁移表 */

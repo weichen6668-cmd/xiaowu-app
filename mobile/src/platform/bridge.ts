@@ -135,7 +135,7 @@ export async function recordStart(): Promise<RecorderHandle> {
   let cbLevel: ((level: number) => void) | null = null;
   let raf = 0;
   const tickLevel = () => {
-    analyser.getByteFrequencyDomainData(dataArr);
+    analyser.getByteFrequencyData(dataArr);
     const avg = dataArr.reduce((a, b) => a + b, 0) / dataArr.length / 128;
     if (cbLevel) cbLevel(Math.min(1, avg));
     raf = requestAnimationFrame(tickLevel);

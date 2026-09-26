@@ -14,11 +14,11 @@
  *   服务端无 config/devices 表 → config 落 localStorage，devices 本地占位（文档无此表）。
  */
 import type { AuthUser, DataBackend, Device, SyncTable, UserConfig } from '@xw/shared';
+import { secureStore, SS_KEYS } from '../../platform/secure-store';
 
 const BASE = 'http://47.239.4.112:8000';
-const LS_TOKEN = 'xw.xiaowu.token';
-const LS_USER = 'xw.xiaowu.user';
 const LS_CONFIG = 'xw.xiaowu.config';
+// 红线：token/user 只进 secure-store（Keystore），禁止 localStorage 直写（P0-D-1）
 
 function lsGet<T>(k: string): T | null {
   try { const v = localStorage.getItem(k); return v ? (JSON.parse(v) as T) : null; } catch { return null; }
@@ -30,10 +30,19 @@ function lsSet(k: string, v: unknown): void {
 export class XiaowuCloudBackend implements DataBackend {
   private token = '';
   private user: AuthUser | null = null;
+  private loaded = false;
 
-  constructor() {
-    this.token = localStorage.getItem(LS_TOKEN) || '';
-    this.user = lsGet<AuthUser>(LS_USER);
+  /** token/user 从 secure-store 恢复（构造器不能 await → 首用惰性加载） */
+  private async ensureLoaded(): Promise<void> {
+    if (this.loaded) return;
+    this.loaded = true;
+    try {
+      this.token = (await secureStore.get(SS_KEYS.ECS_TOKEN)) || '';
+      const raw = await secureStore.get(SS_KEYS.ECS_USER);
+      this.user = raw ? (JSON.parse(raw) as AuthUser) : null;
+    } catch {
+      /* 恢复失败按未登录处理 */
+    }
   }
 
   private auth(): Record<string, string> {
@@ -41,6 +50,7 @@ export class XiaowuCloudBackend implements DataBackend {
   }
 
   private async api<T>(method: string, p: string, body?: unknown): Promise<T> {
+    await this.ensureLoaded();
     const res = await fetch(BASE + p, {
       method,
       headers: { 'Content-Type': 'application/json', ...this.auth() },
@@ -57,8 +67,9 @@ export class XiaowuCloudBackend implements DataBackend {
       'POST', '/api/login', { username, password });
     this.token = data.token;
     this.user = { userId: String(data.user.id), phone: data.user.username };
-    localStorage.setItem(LS_TOKEN, this.token);
-    lsSet(LS_USER, this.user);
+    this.loaded = true;
+    await secureStore.set(SS_KEYS.ECS_TOKEN, this.token);
+    await secureStore.set(SS_KEYS.ECS_USER, JSON.stringify(this.user));
     return this.user;
   }
 
@@ -81,8 +92,9 @@ export class XiaowuCloudBackend implements DataBackend {
   async signOut(): Promise<void> {
     this.token = '';
     this.user = null;
-    localStorage.removeItem(LS_TOKEN);
-    localStorage.removeItem(LS_USER);
+    this.loaded = true;
+    await secureStore.remove(SS_KEYS.ECS_TOKEN);
+    await secureStore.remove(SS_KEYS.ECS_USER);
   }
 
   /** 发短信/邮件验证码（purpose: bind=绑定手机 / reset=忘记密码）→ POST /api/send-code */
@@ -141,6 +153,7 @@ export class XiaowuCloudBackend implements DataBackend {
 
   /** 下行：拉对话列表（sessions）或全部消息（messages，逐对话拉取） */
   async fetchSince(table: SyncTable, _sinceIso: string): Promise<Record<string, unknown>[]> {
+    await this.ensureLoaded(); // uid 依赖登录态，先恢复（原缺陷：api() 前取 user 可能为空）
     const uid = this.user ? this.user.userId : '';
     if (table === 'sessions') {
       const data = await this.api<{ conversations: Record<string, unknown>[] }>('GET', '/api/conversations');
@@ -166,17 +179,77 @@ export class XiaowuCloudBackend implements DataBackend {
     return out;
   }
 
-  /** 服务端暂无 config 表 → localStorage 暂存 */
+  /** 服务端暂无 config 表 → localStorage 暂存（含 ttsEnabled 等，apiKey 不落此） */
   async upsertConfig(cfg: UserConfig): Promise<void> { lsSet(LS_CONFIG, cfg); }
   async fetchConfig(): Promise<UserConfig | null> { return lsGet<UserConfig>(LS_CONFIG); }
 
-  /** 服务端暂无 devices 表 → 本地占位 */
-  async listDevices(): Promise<Device[]> {
-    const d = await this.registerDevice('local');
-    return [d];
+  /* ===== T04：双端互通 5 组新 API（deploy/ecs/*_api.py 同契约） ===== */
+
+  /** oplog 上行 → POST /api/sync/push（op_id 幂等，≤50/批） */
+  async syncPush(ops: Record<string, unknown>[]): Promise<{ accepted: number; dup: number }> {
+    return this.api<{ accepted: number; dup: number }>('POST', '/api/sync/push', { ops });
   }
-  async registerDevice(name: string): Promise<Device> {
-    const now = new Date().toISOString();
-    return { id: 'local', userId: this.user ? this.user.userId : '', deviceName: name, createdAt: now, lastSeenAt: now };
+
+  /** oplog 下行 → GET /api/sync/pull?since=lamport_ts */
+  async syncPull(since: number): Promise<{ ops: Record<string, unknown>[]; latest: number }> {
+    return this.api<{ ops: Record<string, unknown>[]; latest: number }>('GET', `/api/sync/pull?since=${Number(since) || 0}`);
+  }
+
+  /** 设备列表 → GET /api/devices */
+  async listDevices(): Promise<Device[]> {
+    await this.ensureLoaded();
+    const data = await this.api<{ devices: Record<string, unknown>[] }>('GET', '/api/devices');
+    return (data.devices || []).map((d) => ({
+      id: String(d.id ?? ''),
+      userId: String(d.userId ?? ''),
+      deviceName: String(d.deviceName ?? ''),
+      createdAt: String(d.lastSeenAt ?? ''),
+      lastSeenAt: String(d.lastSeenAt ?? ''),
+    }));
+  }
+
+  /** 设备注册（上限 5 台踢最旧）→ POST /api/devices/register */
+  async registerDevice(name: string, os = '', room = ''): Promise<Device> {
+    const d = await this.api<Record<string, unknown>>('POST', '/api/devices/register', {
+      deviceName: name, os, room,
+    });
+    return {
+      id: String(d.id ?? ''),
+      userId: String(d.userId ?? ''),
+      deviceName: String(d.deviceName ?? ''),
+      createdAt: String(d.lastSeenAt ?? ''),
+      lastSeenAt: String(d.lastSeenAt ?? ''),
+    };
+  }
+
+  /** 心跳 → POST /api/devices/heartbeat */
+  async deviceHeartbeat(deviceId: string): Promise<{ ok: boolean }> {
+    return this.api<{ ok: boolean }>('POST', '/api/devices/heartbeat', { deviceId });
+  }
+
+  /** 记忆列表 → GET /api/memories */
+  async listMemories(): Promise<Record<string, unknown>[]> {
+    const data = await this.api<{ memories: Record<string, unknown>[] }>('GET', '/api/memories');
+    return data.memories || [];
+  }
+
+  /** 记忆新增（调试直写；正常走 sync oplog）→ POST /api/memories */
+  async createMemory(text: string, deviceId = ''): Promise<Record<string, unknown>> {
+    return this.api<Record<string, unknown>>('POST', '/api/memories', { text, deviceId });
+  }
+
+  /** 记忆清空（tombstone）→ DELETE /api/memories */
+  async clearMemories(): Promise<{ ok: boolean; cleared: number }> {
+    return this.api<{ ok: boolean; cleared: number }>('DELETE', '/api/memories');
+  }
+
+  /** 附件预签名 → POST /api/attachments（≤20MB、7 天、账号 ≤500MB） */
+  async createAttachment(name: string, mime: string, size: number): Promise<{ uploadUrl: string; fileId: string; expiresAt: number }> {
+    return this.api<{ uploadUrl: string; fileId: string; expiresAt: number }>('POST', '/api/attachments', { name, mime, size });
+  }
+
+  /** 附件下载元数据（含预签名 URL）→ GET /api/attachments/{id}/meta */
+  async attachmentMeta(fileId: string): Promise<{ fileId: string; name: string; mime: string; size: number; downloadUrl: string }> {
+    return this.api<{ fileId: string; name: string; mime: string; size: number; downloadUrl: string }>('GET', `/api/attachments/${encodeURIComponent(fileId)}/meta`);
   }
 }

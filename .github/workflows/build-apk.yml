@@ -25,8 +25,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install dependencies
-        run: npm ci
+      # v2 关键修复：mobile 依赖（three/pixi/three-vrm/live2d/capacitor 等）
+      # 全在 mobile/package.json，必须单独安装；根目录 npm ci 既缺这些依赖又拖慢构建
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: npm install --no-audit --no-fund
 
       - name: Build web assets (xiaowu mode)
         working-directory: mobile

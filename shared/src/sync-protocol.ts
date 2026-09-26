@@ -1,6 +1,7 @@
 /**
  * 同步协议（§8 oplog 格式 / tombstone / M2 预留）：
  * - oplog 结构 {opId, deviceId, lamportTs, entity, entityId, action, payload}
+ * - entity 联合：session|message|user_config|memory|trajectory（M2 扩展，算法零改动）
  * - Lamport 时钟：本地写 +1，合并取 max+1
  * - LWW 决胜：先比 lamportTs，平手比 deviceId 字典序
  * - 删除一律 deleted=true（tombstone），不物理删

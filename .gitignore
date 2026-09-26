@@ -1,7 +1,97 @@
+# 依赖与构建
 node_modules/
-mobile/node_modules/
-mobile/www/
-**/build/
-**/.gradle/
-.DS_Store
+dist/
+*.log
+*.err.log
+
+# 模型与运行时（体积过大，不入版本控制）
+models/
+runtime/
+
+# Python 虚拟环境
+.venv*/
+__pycache__/
+*.pyc
+
+# 密钥（明文不得提交）
+secrets.json
+
+# 数据目录（含用户数据、历史记录）
+data/
+
+# macOS 资源文件
 ._*
+.DS_Store
+
+# 备份文件
+*.bak-*
+backup-*/
+
+# 一次性脚本（历史补丁产物，已归档）
+add-*.js
+fix-*.js
+tmp-*.js
+revert-*.js
+patch-*.js
+step1.js
+step2.js
+step3.js
+js-step.js
+js-step2.js
+html-step.js
+ui-html.js
+ui-js.js
+cleanup.js
+cleanup2.js
+batch3.js
+core6.js
+gen-market.js
+import-skills.js
+migrate-config.js
+svc-multi.js
+push-reply.js
+update-install-owner.js
+
+# tools/ 下的 patch 脚本
+tools/patch_*.py
+tools/reset-config.py
+tools/test_*.js
+tools/test_*.py
+tools/dl_*.py
+tools/analyze_glb.py
+tools/patch_*.py
+
+# 会话历史
+chat-history.json
+memory.json
+skills-index.json
+mcp-servers.json
+
+# 测试与临时文件
+test-body.json
+tmp-req.json
+tmp-req2.json
+tmp-runner-err.txt
+test-mimo-tts.js
+asr-tts-js.js
+asr-tts-svc.js
+asr-tts-ui.js
+auto-filter.js
+export_skills.py
+
+# config 备份
+config.json.bak-*
+
+# 启动脚本备份
+*.command.bak-*
+
+# WorkBuddy 内部目录
+.workbuddy/
+
+# 临时目录
+.cache/
+
+# Supabase/环境变量凭证
+.env.local
+.env
+mobile/.env*

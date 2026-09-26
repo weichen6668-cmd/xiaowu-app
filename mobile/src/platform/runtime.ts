@@ -61,6 +61,10 @@ export async function initRuntime(): Promise<{
   await auth.init(be);
   const userId = auth.user?.userId || '';
 
+  // FR-318 加固①：App 级无条件加载服务配置（auth.init 恢复会话后立即 load，
+  // 不依赖 SettingsPage 挂载）——防冷启直落 ChatPage 时配置空窗走默认值。
+  if (userId) await useSettingsStore.getState().load(userId, deviceId);
+
   // Mock 三件套统一由 bridge.ts 装配（§8）：mock 模式全链路离线可走查
   const mocks = mockAiClients();
   let llmWithKey: LlmClient;
@@ -120,6 +124,7 @@ export async function initRuntime(): Promise<{
       },
       animationList: ANIMATION_CATEGORIES,
       appVersion: '0.1.0 (M1)',
+      ttsEnabled: () => useSettingsStore.getState().config?.ttsEnabled !== false,
     },
     getHistory: async (sessionId: string): Promise<Message[]> =>
       MessageRepo.listBySession(sessionId),

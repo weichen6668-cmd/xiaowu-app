@@ -32,6 +32,8 @@ export interface OrchestratorDeps {
     animationList?: string[];
     weatherProvider?: (city: string) => string;
     appVersion: string;
+    /** 语音播报开关（缺省开启；false 时跳过播报，文字照常显示） */
+    ttsEnabled?: () => boolean;
   };
   /** 历史消息读取（组装上下文用） */
   getHistory: (sessionId: string) => Promise<Message[]>;
@@ -88,6 +90,9 @@ export function createChatOrchestrator(deps: OrchestratorDeps): ChatOrchestrator
   let ttsPlayer: ((audio: Uint8Array) => void) | null = null;
   let sentenceCb: ((text: string) => void) | null = null;
   let animCb: ((clip: string) => void) | null = null;
+  /** TTS 开关：false 时跳过播报（ttsPlayer/onSentence 播报链），文字照常 */
+  const ttsOn = (): boolean =>
+    deps.skillCtx.ttsEnabled ? deps.skillCtx.ttsEnabled() : true;
 
   const skillCtx = {
     triggerAnimation: (clip: string) => {
@@ -170,22 +175,22 @@ export function createChatOrchestrator(deps: OrchestratorDeps): ChatOrchestrator
         const splitter = new SentenceSplitter();
         const reply = await deps.llm.chatStream(msgs, tools, (delta) => {
           if (aborted) return;
-          // 流式分句 → onSentence（逐句 TTS）
+          // 流式分句 → onSentence（逐句 TTS）；ttsEnabled=false 时跳过播报，文字照常累加
           for (const seg of splitter.feed(delta)) {
-            if (sentenceCb) {
+            if (ttsOn() && sentenceCb) {
               try {
                 sentenceCb(seg);
               } catch {
                 /* 忽略 */
               }
             }
-            skillCtx.triggerAnimation('__speaking__'); // 保持口型（three 层翻译）
+            if (ttsOn()) skillCtx.triggerAnimation('__speaking__'); // 保持口型（three 层翻译）
           }
         });
 
         // 补齐残句
         const tail = splitter.flush();
-        if (tail && sentenceCb) {
+        if (tail && ttsOn() && sentenceCb) {
           try {
             sentenceCb(tail);
           } catch {
@@ -272,7 +277,8 @@ export function createChatOrchestrator(deps: OrchestratorDeps): ChatOrchestrator
     },
 
     setTtsPlayer(p: ((audio: Uint8Array) => void) | null): void {
-      ttsPlayer = p;
+      // ttsEnabled=false 时跳过播报（置空玩家，文字照常显示）
+      ttsPlayer = ttsOn() ? p : null;
       void ttsPlayer;
     },
   };
