@@ -18,13 +18,12 @@ import com.getcapacitor.annotation.CapacitorPlugin
 @CapacitorPlugin(name = "OverlayPlugin")
 class OverlayPlugin : Plugin() {
 
-    private var eventCallId: String? = null
+    private var eventCall: PluginCall? = null
 
     override fun load() {
         // 服务侧事件 → JS（运行期唯一出口）
         OverlayService.eventSink = { type, data ->
-            val callId = eventCallId ?: return@eventSink
-            val call = getSavedCall(callId) ?: return@eventSink
+            val call = eventCall ?: return@eventSink
             val ret = JSObject()
             ret.put("type", type)
             val payload = JSObject()
@@ -32,8 +31,7 @@ class OverlayPlugin : Plugin() {
             ret.put("data", payload)
             notifyListeners(type, ret, true)
             call.resolve(ret)
-            freeSavedCall(callId)
-            eventCallId = null // 一次性 resolve，JS 侧循环 re-subscribe
+            eventCall = null // 一次性 resolve，JS 侧循环 re-subscribe
         }
     }
 
@@ -173,7 +171,8 @@ class OverlayPlugin : Plugin() {
     /** 事件订阅（tap/longpress/mini…）：保留 call 一次性 resolve，JS 侧循环重订 */
     @PluginMethod(returnType = PluginMethod.RETURN_CALLBACK)
     fun onEvent(call: PluginCall) {
-        eventCallId?.let { freeSavedCall(it) }
-        eventCallId = saveCall(call)
+        eventCall?.release()
+        eventCall = call
+        call.retain()
     }
 }
