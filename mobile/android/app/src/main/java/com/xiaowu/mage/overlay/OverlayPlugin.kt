@@ -16,7 +16,8 @@ class OverlayPlugin : Plugin() {
 
     override fun load() {
         OverlayService.eventSink = { type, data ->
-            val call = eventCall ?: return
+            val call = eventCall
+            if (call == null) return@eventSink
             val ret = JSObject()
             ret.put("type", type)
             val payload = JSObject()
