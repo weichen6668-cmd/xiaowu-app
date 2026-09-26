@@ -9,21 +9,14 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 
-/**
- * T06 悬浮 Capacitor 插件（三态：ball / pet / mini；与 secure-store 的
- * KeystorePlugin 同注册模式）：show/hide/setForm/expandMini/setPosition/isShown
- * + onEvent JS 事件桥（tap/doubletap/longpress/snapped/mini/closed/shown）。
- * 事件回调保留 call 为长连接（notifyOfRetain 由 saveCall 维持）。
- */
 @CapacitorPlugin(name = "OverlayPlugin")
 class OverlayPlugin : Plugin() {
 
     private var eventCall: PluginCall? = null
 
     override fun load() {
-        // 服务侧事件 → JS（运行期唯一出口）
         OverlayService.eventSink = { type, data ->
-            val call = eventCall ?: return@eventSink
+            val call = eventCall ?: return
             val ret = JSObject()
             ret.put("type", type)
             val payload = JSObject()
@@ -31,11 +24,10 @@ class OverlayPlugin : Plugin() {
             ret.put("data", payload)
             notifyListeners(type, ret, true)
             call.resolve(ret)
-            eventCall = null // 一次性 resolve，JS 侧循环 re-subscribe
+            eventCall = null
         }
     }
 
-    /** 显示悬浮（form: ball|pet；x/y/size 像素/dp；先校验权限） */
     @PluginMethod
     fun show(call: PluginCall) {
         val ctx = context ?: return call.reject("no-context")
@@ -61,7 +53,6 @@ class OverlayPlugin : Plugin() {
         call.resolve(r)
     }
 
-    /** 隐藏并停服务（通知同消，Q13） */
     @PluginMethod
     fun hide(call: PluginCall) {
         OverlayService.instance?.hide()
@@ -70,7 +61,6 @@ class OverlayPlugin : Plugin() {
         call.resolve(r)
     }
 
-    /** 双形态一键互切（ball ⇄ pet） */
     @PluginMethod
     fun setForm(call: PluginCall) {
         val form = call.getString("form") ?: return call.reject("missing form")
@@ -82,7 +72,6 @@ class OverlayPlugin : Plugin() {
         call.resolve(r)
     }
 
-    /** 球点开 = 迷你对话/语音窗（FR-303）：事件推 JS 渲染迷你层 */
     @PluginMethod
     fun expandMini(call: PluginCall) {
         OverlayService.instance?.expandMini()
@@ -109,7 +98,6 @@ class OverlayPlugin : Plugin() {
         call.resolve(r)
     }
 
-    /** 口型推送（TTS 20Hz 链路，Q8 悬浮口型数据源） */
     @PluginMethod
     fun setMouth(call: PluginCall) {
         val open = (call.getFloat("open") ?: 0f).coerceIn(0f, 1f)
@@ -124,7 +112,6 @@ class OverlayPlugin : Plugin() {
         call.resolve()
     }
 
-    /** 性能档位（perf-tier 推入：30/24/8）+ 互斥活跃（主前台 pause/resume） */
     @PluginMethod
     fun setFps(call: PluginCall) {
         val n = call.getInt("fps") ?: 30
@@ -144,7 +131,6 @@ class OverlayPlugin : Plugin() {
         call.resolve()
     }
 
-    /** 权限查询/跳转（FloatPermission） */
     @PluginMethod
     fun permissionState(call: PluginCall) {
         val ctx = context ?: return call.reject("no-context")
@@ -168,11 +154,8 @@ class OverlayPlugin : Plugin() {
         call.resolve()
     }
 
-    /** 事件订阅（tap/longpress/mini…）：保留 call 一次性 resolve，JS 侧循环重订 */
-    @PluginMethod(returnType = PluginMethod.RETURN_CALLBACK)
+    @PluginMethod
     fun onEvent(call: PluginCall) {
-        eventCall?.release()
         eventCall = call
-        call.retain()
     }
 }
