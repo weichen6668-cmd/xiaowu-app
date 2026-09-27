@@ -6,6 +6,7 @@
  */
 import type { RemoteReply, TrajectoryStep, DeviceInfo } from '@xw/shared';
 import { remoteSdk } from './remote-sdk';
+import { unwrapReply } from './remote-api';
 import { useRemoteStore } from '../store/remoteStore';
 import { useDeviceStore } from '../store/deviceStore';
 
@@ -32,10 +33,15 @@ export function routeRemoteMessage(msg: RemoteReply): void {
   const p = msg.payload || {};
   switch (msg.type) {
     case 'reply': {
-      const result = p.result as { text?: string; asrText?: string } | undefined;
-      const text = result && typeof result.text === 'string' ? result.text : (typeof p.text === 'string' ? p.text : '');
-      const asrText = result && typeof result.asrText === 'string' ? result.asrText : undefined;
-      rs.setReply(text, asrText);
+      // 归一信封：payload.result.text / payload.text / 顶层 text（voice 命令 ASR 回显）都可读
+      const d = unwrapReply(msg);
+      const text = typeof d.text === 'string' ? d.text
+        : (d.result && typeof (d.result as { text?: unknown }).text === 'string' ? (d.result as { text: string }).text : '');
+      const asrText = typeof d.asrText === 'string' ? d.asrText : undefined;
+      if (text || asrText) rs.setReply(text, asrText);
+      // 截图命令结果也走 reply 平铺返回（{ok, screenshot:{imageB64}}）→ 落截图卡片
+      const shot = d.screenshot as { imageB64?: string } | undefined;
+      if (shot && typeof shot.imageB64 === 'string') rs.setScreenshot(shot.imageB64);
       break;
     }
     case 'step': {
@@ -48,7 +54,11 @@ export function routeRemoteMessage(msg: RemoteReply): void {
       break;
     }
     case 'screenshot': {
-      rs.setScreenshot(String(p.imageB64 || ''));
+      // 两种形状：payload.imageB64（标准信封）或 顶层 screenshot.imageB64（桌面平铺返回）
+      const d = unwrapReply(msg);
+      const shot = d.screenshot as { imageB64?: string } | undefined;
+      const b64 = typeof d.imageB64 === 'string' ? d.imageB64 : String((shot && shot.imageB64) || '');
+      rs.setScreenshot(b64);
       break;
     }
     case 'file': {
