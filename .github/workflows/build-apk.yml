@@ -14,32 +14,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-
-      # v2 关键修复：mobile 依赖（three/pixi/three-vrm/live2d/capacitor 等）
-      # 全在 mobile/package.json，必须单独安装；根目录 npm ci 既缺这些依赖又拖慢构建
-      - name: Install mobile dependencies
-        working-directory: mobile
-        run: npm install --no-audit --no-fund
-
-      - name: Build web assets (xiaowu mode)
-        working-directory: mobile
-        env:
-          VITE_DATA_BACKEND: xiaowu
-        run: npx vite build
-
-      - name: Capacitor sync
-        working-directory: mobile
-        run: npx cap sync android
 
       - name: Grant execute permission
         run: chmod +x mobile/android/gradlew
