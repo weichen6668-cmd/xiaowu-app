@@ -110,6 +110,28 @@ class PetRendererView(context: Context) : GLSurfaceView(context) {
         requestRender()
     }
 
+    /** 静态贴图推送（base64 PNG/JPEG；WebView 3D 帧快照 → GL 面，Q14 近似渲染） */
+    fun setTextureB64(b64: String) {
+        val raw = b64.substringAfter("base64,", b64)
+        val bytes = try {
+            android.util.Base64.decode(raw, android.util.Base64.DEFAULT)
+        } catch (e: Exception) {
+            return
+        }
+        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
+        queueEvent {
+            petRenderer.pendingTexture = bmp
+            petRenderer.needTextureUpload = true
+        }
+        requestRender()
+    }
+
+    /** 球形态圆形裁剪（uRound=1 丢弃四角像素，与桌宠矩形面视觉区分） */
+    fun setBallMask(on: Boolean) {
+        queueEvent { petRenderer.ballMask = on }
+        requestRender()
+    }
+
     /** 主 App 前台/后台互斥活跃：暂停推进动画时间轴（GLSurfaceView.onPause 停 GL 线程） */
     fun pauseAnim() {
         queueEvent { petRenderer.animPaused = true }
@@ -161,6 +183,7 @@ class PetRendererView(context: Context) : GLSurfaceView(context) {
         @Volatile var animPaused = false
         @Volatile var mouthOpenTarget = 0f
         @Volatile var form: Form = Form.FORM_3D
+        @Volatile var ballMask = false
 
         private var texId = 0
         private var program = 0
@@ -168,6 +191,7 @@ class PetRendererView(context: Context) : GLSurfaceView(context) {
         private var aUv = 0
         private var uMvp = 0
         private var uMouth = 0
+        private var uRound = 0
         private var vbo: FloatBuffer? = null
         private var startMs = SystemClock.elapsedRealtime()
         private var lastFrameMs = 0L
@@ -195,6 +219,7 @@ class PetRendererView(context: Context) : GLSurfaceView(context) {
             aUv = GLES20.glGetAttribLocation(program, "aUv")
             uMvp = GLES20.glGetUniformLocation(program, "uMvp")
             uMouth = GLES20.glGetUniformLocation(program, "uMouth")
+            uRound = GLES20.glGetUniformLocation(program, "uRound")
             vbo = ByteBuffer.allocateDirect(quad.size * 4)
                 .order(ByteOrder.nativeOrder())
                 .asFloatBuffer()
@@ -263,6 +288,7 @@ class PetRendererView(context: Context) : GLSurfaceView(context) {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
             GLES20.glUniformMatrix4fv(uMvp, 1, false, mvp, 0)
             GLES20.glUniform1f(uMouth, mouthOpen)
+            GLES20.glUniform1f(uRound, if (ballMask) 1f else 0f)
             vbo?.position(0)
             GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 16, vbo)
             vbo?.position(2)
@@ -297,11 +323,19 @@ class PetRendererView(context: Context) : GLSurfaceView(context) {
                     "varying vec2 vUv;\n" +
                     "uniform sampler2D uTex;\n" +
                     "uniform float uMouth;\n" +
+                    "uniform float uRound;\n" +
                     "void main(){\n" +
                     "  vec2 uv = vUv;\n" +
                     // 口型：嘴部区（uv.y>0.62）随 uMouth 下压下半脸像素，形成开合感
                     "  if (uv.y > 0.62) { uv.y += uMouth * 0.10 * smoothstep(0.62, 1.0, uv.y); }\n" +
-                    "  gl_FragColor = texture2D(uTex, uv);\n" +
+                    "  vec4 c = texture2D(uTex, uv);\n" +
+                    // 球形态：圆形裁剪 + 边缘羽化（桌宠矩形面零改动）
+                    "  if (uRound > 0.5) {\n" +
+                    "    float d = distance(vUv, vec2(0.5, 0.5));\n" +
+                    "    float a = 1.0 - smoothstep(0.47, 0.5, d);\n" +
+                    "    c.a *= a;\n" +
+                    "  }\n" +
+                    "  gl_FragColor = c;\n" +
                     "}"
                 )
             val vId = compile(GLES20.GL_VERTEX_SHADER, vs)
