@@ -36,7 +36,8 @@ export class ThreeStage implements AvatarRenderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.loader.setMeshoptDecoder(MeshoptDecoder as never);
-    this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    // preserveDrawingBuffer：toDataURL 快照需保留帧缓冲（否则读到空帧 → 悬浮窗贴图透明）
+    this.renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setClearColor(0x000000, 0);
     this.scene.add(this.modelRoot);
@@ -281,6 +282,16 @@ export class ThreeStage implements AvatarRenderer {
   resetPose(): void {
     this.modelRoot.rotation.y = 0;
     this.applyZoom(1);
+  }
+
+  /** 帧快照（悬浮窗贴图源）：当前渲染帧 → dataURL；未就绪返回 null */
+  snapshot(): string | null {
+    try {
+      this.renderer.render(this.scene, this.camera);
+      return this.renderer.domElement.toDataURL('image/png');
+    } catch {
+      return null;
+    }
   }
 
   dispose(): void {
