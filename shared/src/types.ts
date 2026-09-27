@@ -77,9 +77,18 @@ export interface UserConfig {
   llmModel: string;
   asrProvider: string;
   asrBaseUrl: string;
+  /** ASR 模型名（空=协议默认：mimo→mimo-v2.5-asr，openai→whisper-1） */
+  asrModel?: string;
+  /** 火山 ASR appid/cluster（非密钥配置；apiKey 仍只进 Keystore） */
+  asrAppid?: string;
+  asrCluster?: string;
   ttsProvider: string;
   ttsBaseUrl: string;
   ttsVoice: string;
+  /** TTS 模型名（空=协议默认：mimo→mimo-v2.5-tts，openai→tts-1） */
+  ttsModel?: string;
+  /** 火山 TTS appid */
+  ttsAppid?: string;
   /** 语音播报开关（默认 true；false 时文字照常显示、不播报） */
   ttsEnabled: boolean;
   lamportTs: number;
