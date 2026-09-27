@@ -95,3 +95,16 @@ config.json.bak-*
 .env.local
 .env
 mobile/.env*
+
+# 交付打包产物（体积过大，不入版本控制；源码与文档仍入库）
+outputs/**/*.tar.gz
+outputs/**/*.zip
+outputs/**/*.tgz
+outputs/交付汇总-*/
+outputs/上传GitHub-*/
+outputs/APK打包材料-*/
+_archive/tests/*.tgz
+*.app/
+
+# 数据库备份文件（不入版本控制）
+*.sql.gz
