@@ -4,7 +4,7 @@
  * M2 预留三列：device_id / lamport_ts / deleted。
  * 迁移版本号 SCHEMA_VERSION 变更时执行增量 DDL。
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** 本地四张表 DDL（含 outbox） */
 export const DDL: string[] = [
@@ -38,14 +38,19 @@ export const DDL: string[] = [
     user_id       text primary key,
     device_id     text not null default '',
     avatar_model  text not null default 'mage-a',
-    llm_provider  text not null default 'deepseek',
-    llm_base_url  text not null default 'https://api.deepseek.com/v1',
-    llm_model     text not null default 'deepseek-chat',
-    asr_provider  text not null default 'volc',
-    asr_base_url  text not null default 'https://openspeech.bytedance.com',
-    tts_provider  text not null default 'volc',
-    tts_base_url  text not null default 'https://openspeech.bytedance.com',
-    tts_voice     text not null default 'xiaowu_female',
+    llm_provider  text not null default 'custom',
+    llm_base_url  text not null default 'https://apimimo.zaiyunding.com/v1',
+    llm_model     text not null default 'mimo-v2.6-pro',
+    asr_provider  text not null default 'openai',
+    asr_base_url  text not null default 'https://api.siliconflow.cn/v1',
+    asr_model     text not null default 'XingChenAGI/XingChenASR-V3.2-Ultra',
+    asr_appid     text not null default '',
+    asr_cluster   text not null default '',
+    tts_provider  text not null default 'mimo',
+    tts_base_url  text not null default 'https://api.xiaomimimo.com/v1',
+    tts_model     text not null default 'mimo-v2.5-tts',
+    tts_appid     text not null default '',
+    tts_voice     text not null default '白桦',
     tts_enabled   integer not null default 1,
     lamport_ts    integer not null default 0,
     updated_at    text not null,
@@ -99,6 +104,18 @@ export const MIGRATION_DDL = `create table if not exists schema_meta (
   key text primary key,
   value text not null
 )`;
+
+/**
+ * v3 增量迁移：ASR/TTS 扩展列（旧库 ALTER 补列）。
+ * SQLite 无 add column if not exists，重复执行会抛「duplicate column」——执行处逐条吞错。
+ */
+export const MIGRATIONS: string[] = [
+  `alter table user_config add column asr_model text not null default ''`,
+  `alter table user_config add column asr_appid text not null default ''`,
+  `alter table user_config add column asr_cluster text not null default ''`,
+  `alter table user_config add column tts_model text not null default ''`,
+  `alter table user_config add column tts_appid text not null default ''`,
+];
 
 /** 建库语句序列（open 后执行） */
 export function allDdl(): string[] {
