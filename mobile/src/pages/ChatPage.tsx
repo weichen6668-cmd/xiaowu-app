@@ -32,6 +32,28 @@ let ttsChain: Promise<void> = Promise.resolve();
 let curAudio: HTMLAudioElement | null = null;
 let ttsGen = 0; // 代际：stopSpeak 递增即作废所有在途/排队句
 let ttsPending = 0; // 在播+排队句数，归零才置 speaking=false
+let ttsCredsWarned = false; // 缺凭证提示只报一次，不刷屏
+let audioUnlocked = false; // WebView 自动播放解锁标记
+
+/** 魔数嗅探音频 MIME（桌面 app.js 同款：无 MIME 的 WAV 在 WebView 解码失败会静默失声） */
+export function sniffAudioMime(b: Uint8Array): string {
+  if (b.length >= 4) {
+    if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) return 'audio/wav'; // RIFF
+    if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return 'audio/ogg'; // OggS
+    if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return 'audio/mpeg'; // ID3
+  }
+  return 'audio/mpeg';
+}
+
+/** WebView 自动播放解锁：用户手势内播放 0 音量静音片段（一次性），否则后续 play() 被 NotAllowedError 拦截 */
+export function prewarmAudio(): void {
+  if (audioUnlocked) return;
+  try {
+    const el = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=');
+    el.volume = 0;
+    void el.play().then(() => { audioUnlocked = true; }).catch(() => undefined);
+  } catch { /* 无 Audio 环境忽略 */ }
+}
 
 export function stopSpeak(): void {
   ttsGen++;
@@ -43,6 +65,12 @@ export function stopSpeak(): void {
   }
 }
 
+function notifyTtsMissingCreds(): void {
+  if (ttsCredsWarned) return;
+  ttsCredsWarned = true;
+  useChatStore.setState({ error: 'TTS 未配置完整（缺 API Key 或 appid），已用系统语音兜底' });
+}
+
 async function speakOnce(text: string, gen: number): Promise<void> {
   const t = text.slice(0, 500);
   if (!t || gen !== ttsGen) return;
@@ -52,14 +80,34 @@ async function speakOnce(text: string, gen: number): Promise<void> {
     const audio = await createTtsClient(() => row).synthesize(t);
     if (gen !== ttsGen) return; // 合成期间被停止
     if (audio && audio.length) {
-      const url = URL.createObjectURL(new Blob([audio.buffer as ArrayBuffer]));
+      const url = URL.createObjectURL(new Blob([audio.slice().buffer as ArrayBuffer], { type: sniffAudioMime(audio) }));
       const el = new Audio(url);
       curAudio = el;
-      el.onended = () => URL.revokeObjectURL(url);
-      await el.play();
+      // 等 onended 再出队（只等 play() 会句间叠播）；30s 兜底防队列卡死
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => { URL.revokeObjectURL(url); resolve(); }, 30000);
+        const done = () => { clearTimeout(timer); URL.revokeObjectURL(url); resolve(); };
+        el.onended = done;
+        el.onerror = done;
+        el.play().catch((e) => {
+          clearTimeout(timer);
+          URL.revokeObjectURL(url);
+          const name = String((e as Error)?.name || '');
+          useChatStore.setState({
+            error: name === 'NotAllowedError'
+              ? '语音播放被系统拦截：请再点一次发送或播报'
+              : '语音播放失败: ' + String((e as Error)?.message || e).slice(0, 60),
+          });
+          resolve();
+        });
+      });
       return;
     }
-  } catch { /* 合成失败退系统 TTS */ }
+    notifyTtsMissingCreds(); // synthesize 返回 null = 缺凭证（key/appid）
+  } catch (e) {
+    // 合成失败退系统 TTS，但原因必须上屏（以前空 catch 全链零提示）
+    useChatStore.setState({ error: 'TTS 合成失败，已退系统语音: ' + String((e as Error)?.message || e).slice(0, 60) });
+  }
   try {
     await new Promise<void>((resolve) => {
       const u = new SpeechSynthesisUtterance(t);
@@ -118,7 +166,7 @@ function BubbleActions({ text }: { text: string }): React.ReactElement {
   return (
     <div style={actStyles.row}>
       {btn('复制', () => void copyText(text))}
-      {btn('播报', () => { useChatStore.getState().setSpeaking(true); void speakText(text); })}
+      {btn('播报', () => { prewarmAudio(); useChatStore.getState().setSpeaking(true); void speakText(text); })}
       {btn('赞', () => setVote(vote === 'up' ? null : 'up'), vote === 'up')}
       {btn('踩', () => setVote(vote === 'down' ? null : 'down'), vote === 'down')}
       {btn('转发', () => void shareText(text))}
@@ -149,7 +197,9 @@ export function ChatPage(): React.ReactElement {
   const rSteps = useRemoteStore((s) => s.steps);
   const preemptedMsg = useRemoteStore((s) => s.preemptedMsg);
   const setPreempted = useRemoteStore((s) => s.setPreempted);
-  const [recording, setRecording] = useState(false);
+  const [recording, setRecording] = useState(false); // 语音输入（按住说话）进行中
+  const [callActive, setCallActive] = useState(false); // 实时通话进行中
+  const [callPhase, setCallPhase] = useState<'listen' | 'think' | 'speak'>('listen');
   const [level, setLevel] = useState(0);
   const [online, setOnline] = useState(isOnline());
   const [draft, setDraft] = useState('');
@@ -157,6 +207,8 @@ export function ChatPage(): React.ReactElement {
   const [stageOpen, setStageOpen] = useState(true); // 3D 舞台收起态（T05：上滑/点击收起只留消息流）
   const stageTouchY = useRef(0);
   const recRef = useRef<RecorderHandle | null>(null);
+  const callGenRef = useRef(0); // 通话代际：结束/重启递增，作废在途循环
+  const callOnRef = useRef(false); // 通话循环开关（闭包内读，避免 state 陈旧）
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [pickAccept, setPickAccept] = useState('image/*');
@@ -208,6 +260,7 @@ export function ChatPage(): React.ReactElement {
     const t = text.trim();
     if (!t) return;
     setDraft('');
+    prewarmAudio(); // 用户手势内解锁音频（否则 TTS play() 被 WebView 拦）
     // 远程模式：发给电脑执行（chat_text）
     if (remoteMode && remoteSdk.isConnected()) {
       useRemoteStore.getState().clearTurn();
@@ -229,11 +282,16 @@ export function ChatPage(): React.ReactElement {
   };
 
   const doVoiceStart = async () => {
+    if (callActive || callOnRef.current) {
+      useChatStore.setState({ error: '实时通话中：点「结束通话」后再用语音输入' });
+      return;
+    }
     if (!online && !isMockMode()) {
       useChatStore.setState({ error: '离线，恢复网络后再试' });
       return;
     }
     await hapticLight();
+    prewarmAudio();
     if (!(await requestMic())) {
       // 根因修复：以前静默 return →「点了没反应」。必须上屏提示
       useChatStore.setState({ error: '麦克风不可用：请在系统设置授予录音权限' });
@@ -252,8 +310,10 @@ export function ChatPage(): React.ReactElement {
   const doVoiceEnd = async () => {
     const handle = recRef.current;
     if (!handle) return;
+    recRef.current = null; // 立即清句柄：防二次 stop 空句柄报「录音失败」
     setRecording(false);
     setLevel(0);
+    prewarmAudio();
     let wav: Uint8Array | null = null;
     try {
       wav = await handle.stop();
@@ -295,6 +355,122 @@ export function ChatPage(): React.ReactElement {
     }
   };
 
+  /* ===== 实时通话（📞）：免按键连续对话——录音→ASR→LLM→TTS→自动再听 ===== */
+  const startCall = async () => {
+    if (remoteMode && remoteSdk.isConnected()) {
+      useChatStore.setState({ error: '通话模式暂不支持遥控会话，请先断开遥控' });
+      return;
+    }
+    if (!online && !isMockMode()) {
+      useChatStore.setState({ error: '离线，恢复网络后再试' });
+      return;
+    }
+    await hapticLight();
+    prewarmAudio();
+    if (!(await requestMic())) {
+      useChatStore.setState({ error: '麦克风不可用：请在系统设置授予录音权限' });
+      return;
+    }
+    stopSpeak(); // 进通话先清残留播报
+    const gen = ++callGenRef.current;
+    callOnRef.current = true;
+    setCallActive(true);
+    setCallPhase('listen');
+    void callLoop(gen);
+  };
+
+  const stopCall = () => {
+    callOnRef.current = false;
+    callGenRef.current++;
+    setCallActive(false);
+    setCallPhase('listen');
+    const h = recRef.current;
+    if (h) {
+      try { h.cancel(); } catch { /* ignore */ }
+      recRef.current = null;
+    }
+    setLevel(0);
+    stopSpeak();
+    setSpeaking(false);
+  };
+
+  /** 通话中打断：点「说」立即停播报、循环自动续听 */
+  const callInterrupt = () => {
+    stopSpeak();
+    interrupt(getOrchestrator());
+    setSpeaking(false);
+  };
+
+  const callLoop = async (gen: number) => {
+    while (callOnRef.current && gen === callGenRef.current) {
+      // ① 录音：最长 15s；说过话后静音 1.2s 自动截止（说完停顿即识别）
+      let handle: RecorderHandle;
+      try {
+        handle = await recordStart();
+      } catch (e) {
+        useChatStore.setState({ error: '录音启动失败: ' + String((e as Error).message || e).slice(0, 60) });
+        break;
+      }
+      if (!callOnRef.current || gen !== callGenRef.current) {
+        try { handle.cancel(); } catch { /* ignore */ }
+        return;
+      }
+      recRef.current = handle;
+      setCallPhase('listen');
+      setLevel(0);
+      let heard = 0;
+      handle.onLevel((lv) => {
+        setLevel(lv);
+        if (lv > 0.08) heard = Date.now();
+      });
+      const started = Date.now();
+      const wav = await new Promise<Uint8Array | null>((resolve) => {
+        const iv = setInterval(() => {
+          if (!callOnRef.current || gen !== callGenRef.current) {
+            clearInterval(iv);
+            try { handle.cancel(); } catch { /* ignore */ }
+            resolve(null);
+            return;
+          }
+          const now = Date.now();
+          const spoken = heard > 0;
+          if (now - started > 15000 || (spoken && now - heard > 1200)) {
+            clearInterval(iv);
+            handle.stop().then(resolve, () => resolve(null));
+          }
+        }, 200);
+      });
+      recRef.current = null;
+      if (!callOnRef.current || gen !== callGenRef.current) return;
+      if (!wav || !wav.length) {
+        if (heard === 0 && Date.now() - started >= 15000) continue; // 纯静音轮：不报错继续听
+        useChatStore.setState({ error: '录音失败，请重试' });
+        continue;
+      }
+      // ② 发送（ASR→LLM→TTS 逐句，与语音输入同链路）
+      setCallPhase('think');
+      if (!activeId) break;
+      try {
+        await sendVoice(getOrchestrator(), wav, activeId);
+      } catch { /* chatStore 已上屏 */ }
+      if (!callOnRef.current || gen !== callGenRef.current) return;
+      // ③ 等本轮播报收尾再续听（点「说」打断 → speaking 变 false 立即续听）
+      setCallPhase('speak');
+      await new Promise<void>((resolve) => {
+        const t0 = Date.now();
+        const iv = setInterval(() => {
+          const st = useChatStore.getState();
+          if (!callOnRef.current || gen !== callGenRef.current || !st.speaking || Date.now() - t0 > 30000) {
+            clearInterval(iv);
+            resolve();
+          }
+        }, 300);
+      });
+      if (!callOnRef.current || gen !== callGenRef.current) return;
+    }
+    if (gen === callGenRef.current) stopCall(); // 异常 break 收尾（用户点结束则代际已变，不重入）
+  };
+
   return (
     <div style={pageStyles.page}>
       {/* 顶栏：[←][✎] 双行标题 [📞][🔇] */}
@@ -330,9 +506,9 @@ export function ChatPage(): React.ReactElement {
         </div>
         <button
           type="button"
-          aria-label="语音通话"
-          style={{ ...pageStyles.topIcon, color: recording ? '#e5484d' : undefined }}
-          onClick={() => void (recording ? doVoiceEnd() : doVoiceStart())}
+          aria-label="实时通话"
+          style={{ ...pageStyles.topIcon, color: callActive ? '#e5484d' : undefined }}
+          onClick={() => void (callActive ? stopCall() : startCall())}
         >
           📞
         </button>
@@ -398,7 +574,24 @@ export function ChatPage(): React.ReactElement {
       </div>
 
       <TtsStatus speaking={speaking} onStop={() => { stopSpeak(); interrupt(getOrchestrator()); setSpeaking(false); }} />
-      <Waveform level={level} active={recording} />
+      <Waveform level={level} active={recording || (callActive && callPhase === 'listen')} />
+
+      {/* 实时通话面板（📞 进入；与 🎙 语音输入完全独立的状态/链路） */}
+      {callActive ? (
+        <div style={pageStyles.callPanel}>
+          <div style={pageStyles.callTitle}>
+            {callPhase === 'listen'
+              ? '🎙 聆听中…说完停顿即识别'
+              : callPhase === 'think'
+                ? '💭 思考中…'
+                : '🔊 说话中…点「说」打断'}
+          </div>
+          <div style={pageStyles.callBtns}>
+            <button type="button" style={pageStyles.callSay} onClick={callInterrupt}>🎤 说</button>
+            <button type="button" style={pageStyles.callEnd} onClick={stopCall}>结束通话</button>
+          </div>
+        </div>
+      ) : null}
 
       {/* 底部工具条：设备 chip + 选择项目 + ⓘ */}
       <div style={pageStyles.toolRow}>
@@ -460,13 +653,17 @@ export function ChatPage(): React.ReactElement {
         />
         <button
           type="button"
-          aria-label="语音"
+          aria-label="语音输入"
           style={{ ...pageStyles.dockMic, ...(recording ? pageStyles.dockMicOn : {}) }}
           disabled={!online && !isMockMode()}
-          onMouseDown={() => void doVoiceStart()}
-          onMouseUp={() => void doVoiceEnd()}
-          onTouchStart={(e) => { e.preventDefault(); void doVoiceStart(); }}
-          onTouchEnd={(e) => { e.preventDefault(); void doVoiceEnd(); }}
+          onPointerDown={(e) => {
+            // pointer 单通道：原 mouse+touch 双绑会在真机双重触发（二次 stop 报「录音失败」）
+            e.preventDefault();
+            try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* 某些 WebView 不支持 */ }
+            void doVoiceStart();
+          }}
+          onPointerUp={() => void doVoiceEnd()}
+          onPointerCancel={() => void doVoiceEnd()}
         >
           🎙
         </button>
@@ -535,4 +732,9 @@ const pageStyles: Record<string, React.CSSProperties> = {
   errBar: { position: 'absolute', top: 56, left: '50%', transform: 'translateX(-50%)', fontSize: 12, background: 'rgba(229,72,77,0.85)', border: 'none', borderRadius: 999, padding: '4px 12px', color: '#fff' },
   plusMenu: { position: 'absolute', bottom: 70, left: 10, right: 10, background: '#241640', borderRadius: 12, padding: 6, zIndex: 20, display: 'flex', flexDirection: 'column', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' },
   plusItem: { border: 'none', background: 'none', color: '#eee', textAlign: 'left', padding: '11px 14px', fontSize: 14, borderRadius: 8 },
+  callPanel: { position: 'absolute', left: 12, right: 12, bottom: 78, background: 'rgba(36,21,64,0.96)', borderRadius: 14, padding: '12px 14px', zIndex: 15, boxShadow: '0 8px 24px rgba(0,0,0,0.5)', border: '1px solid rgba(229,72,77,0.5)' },
+  callTitle: { fontSize: 13, color: '#eee', marginBottom: 10, textAlign: 'center' },
+  callBtns: { display: 'flex', gap: 10, justifyContent: 'center' },
+  callSay: { border: 'none', borderRadius: 999, padding: '9px 22px', fontSize: 14, background: '#6c5ce7', color: '#fff' },
+  callEnd: { border: 'none', borderRadius: 999, padding: '9px 22px', fontSize: 14, background: '#e5484d', color: '#fff' },
 };
