@@ -27,24 +27,64 @@ import type { RecorderHandle } from '../platform/bridge';
 import { createTtsClient, type Message } from '@xw/shared';
 
 /** 播报：TTS 合成 + Audio 元素播放；合成不可用退系统 speechSynthesis */
-async function speakText(text: string): Promise<void> {
+/** 播放队列：逐句排队不叠播；stopSpeak 打断当前句并作废已排队句（代际令牌） */
+let ttsChain: Promise<void> = Promise.resolve();
+let curAudio: HTMLAudioElement | null = null;
+let ttsGen = 0; // 代际：stopSpeak 递增即作废所有在途/排队句
+let ttsPending = 0; // 在播+排队句数，归零才置 speaking=false
+
+export function stopSpeak(): void {
+  ttsGen++;
+  ttsPending = 0;
+  try { window.speechSynthesis.cancel(); } catch { /* 无系统 TTS */ }
+  if (curAudio) {
+    try { curAudio.pause(); } catch { /* ignore */ }
+    curAudio = null;
+  }
+}
+
+async function speakOnce(text: string, gen: number): Promise<void> {
   const t = text.slice(0, 500);
-  if (!t) return;
+  if (!t || gen !== ttsGen) return;
   try {
     const key = await readApiKey('tts');
     const row = { ...useSettingsStore.getState().ttsRow(), apiKey: key };
     const audio = await createTtsClient(() => row).synthesize(t);
+    if (gen !== ttsGen) return; // 合成期间被停止
     if (audio && audio.length) {
       const url = URL.createObjectURL(new Blob([audio.buffer as ArrayBuffer]));
       const el = new Audio(url);
+      curAudio = el;
       el.onended = () => URL.revokeObjectURL(url);
       await el.play();
       return;
     }
   } catch { /* 合成失败退系统 TTS */ }
   try {
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(t));
+    await new Promise<void>((resolve) => {
+      const u = new SpeechSynthesisUtterance(t);
+      u.onend = () => resolve();
+      u.onerror = () => resolve();
+      window.speechSynthesis.speak(u);
+      setTimeout(resolve, 15000); // 部分 WebView 不回 onend，兜底防队列卡死
+    });
   } catch { /* 无系统 TTS 则静默（点击即触发，无挂起态） */ }
+}
+
+function speakText(text: string): Promise<void> {
+  const gen = ttsGen;
+  ttsPending++;
+  ttsChain = ttsChain
+    .then(() => (gen === ttsGen ? speakOnce(text, gen) : undefined))
+    .catch(() => undefined)
+    .then(() => {
+      ttsPending = Math.max(0, ttsPending - 1);
+      if (ttsPending === 0 && gen === ttsGen) {
+        // 全部播完才熄灭「说话中」；交给调用方 setSpeaking 会提前熄灯
+        useChatStore.getState().setSpeaking(false);
+      }
+    });
+  return ttsChain;
 }
 
 async function copyText(text: string): Promise<void> {
@@ -78,7 +118,7 @@ function BubbleActions({ text }: { text: string }): React.ReactElement {
   return (
     <div style={actStyles.row}>
       {btn('复制', () => void copyText(text))}
-      {btn('播报', () => void speakText(text))}
+      {btn('播报', () => { useChatStore.getState().setSpeaking(true); void speakText(text); })}
       {btn('赞', () => setVote(vote === 'up' ? null : 'up'), vote === 'up')}
       {btn('踩', () => setVote(vote === 'down' ? null : 'down'), vote === 'down')}
       {btn('转发', () => void shareText(text))}
@@ -97,7 +137,7 @@ export function ChatPage(): React.ReactElement {
   const user = useAuthStore((s) => s.user);
   const { messages, sending, speaking, streamingText, error, clearError, load, send, sendVoice, setSpeaking, interrupt } =
     useChatStore();
-  const { activeId, createSession, load: loadSessions, list } = useSessionStore();
+  const { activeId, createSession, load: loadSessions, list, touch } = useSessionStore();
   const config = useSettingsStore((s) => s.config);
   const update = useSettingsStore((s) => s.update);
   const current = useDeviceStore((s) => s.current);
@@ -118,6 +158,8 @@ export function ChatPage(): React.ReactElement {
   const stageTouchY = useRef(0);
   const recRef = useRef<RecorderHandle | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [pickAccept, setPickAccept] = useState('image/*');
 
   const sessionTitle = list.find((s: { id: string; title: string }) => s.id === activeId)?.title || '小巫对话';
   const deviceLabel = remoteMode && current ? current.deviceName : '本机';
@@ -126,6 +168,21 @@ export function ChatPage(): React.ReactElement {
   useEffect(() => {
     onNetworkChange(setOnline);
     installCmdRouter(); // 回流分发接线（幂等）
+    // TTS 逐句播报接线（根因修复：此前只置 speaking 状态、从不合成播放）
+    try {
+      getOrchestrator().onSentence((seg) => {
+        // 尊重「语音播报」开关：关闭时不自动播（气泡「播报」按钮不受限，用户显式点播）
+        if (useSettingsStore.getState().config?.ttsEnabled === false) return;
+        setSpeaking(true);
+        void speakText(seg);
+      });
+    } catch { /* runtime 未初始化（测试环境）忽略 */ }
+    // 离开遥控会话必须释放抢占：否则服务端一直认为本端持有遥控权，其他端进来被 XW5005 卡死
+    return () => {
+      stopSpeak();
+      if (useRemoteStore.getState().remoteMode) void remoteSdk.release().catch(() => undefined);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -163,25 +220,33 @@ export function ChatPage(): React.ReactElement {
     }
     if (!activeId) return;
     const orch = getOrchestrator();
-    orch.onSentence(() => setSpeaking(true));
-    setSpeaking(true);
+    // TTS 接线在挂载 useEffect 统一注册（根因修复：此前 onSentence 只置状态、从不调 speak）
     try {
       await send(orch, t, activeId);
     } catch {
       /* chatStore 已捕获并上屏 error，此处兜底防未预期异常 */
-    } finally {
-      setSpeaking(false);
     }
   };
 
   const doVoiceStart = async () => {
-    if (!online && !isMockMode()) return;
+    if (!online && !isMockMode()) {
+      useChatStore.setState({ error: '离线，恢复网络后再试' });
+      return;
+    }
     await hapticLight();
-    if (!(await requestMic())) return;
-    const handle = await recordStart();
-    handle.onLevel(setLevel);
-    recRef.current = handle;
-    setRecording(true);
+    if (!(await requestMic())) {
+      // 根因修复：以前静默 return →「点了没反应」。必须上屏提示
+      useChatStore.setState({ error: '麦克风不可用：请在系统设置授予录音权限' });
+      return;
+    }
+    try {
+      const handle = await recordStart();
+      handle.onLevel(setLevel);
+      recRef.current = handle;
+      setRecording(true);
+    } catch (e) {
+      useChatStore.setState({ error: '录音启动失败: ' + String((e as Error).message || e).slice(0, 60) });
+    }
   };
 
   const doVoiceEnd = async () => {
@@ -203,7 +268,12 @@ export function ChatPage(): React.ReactElement {
     if (remoteMode && remoteSdk.isConnected()) {
       let b64 = '';
       try {
-        b64 = btoa(String.fromCharCode(...Array.from(wav)));
+        // 分块编码：整段展开在长录音（>10 万样本）会爆调用栈
+        let s = '';
+        for (let i = 0; i < wav.length; i += 0x8000) {
+          s += String.fromCharCode(...wav.subarray(i, i + 0x8000));
+        }
+        b64 = btoa(s);
       } catch {
         useChatStore.setState({ error: '音频编码失败，请重试' });
         return;
@@ -218,13 +288,10 @@ export function ChatPage(): React.ReactElement {
     }
     if (!activeId) return;
     const orch = getOrchestrator();
-    setSpeaking(true);
     try {
       await sendVoice(orch, wav, activeId);
     } catch {
       useChatStore.setState({ error: '发送失败，请重试' });
-    } finally {
-      setSpeaking(false);
     }
   };
 
@@ -233,17 +300,51 @@ export function ChatPage(): React.ReactElement {
       {/* 顶栏：[←][✎] 双行标题 [📞][🔇] */}
       <header style={pageStyles.topBar}>
         <button type="button" aria-label="会话列表" style={pageStyles.topIcon} onClick={() => nav('/sessions')}>←</button>
-        <button type="button" aria-label="新会话" style={pageStyles.topIcon} onClick={() => void createSession(user?.userId || '', getDeviceId())}>✎</button>
+        <button
+          type="button"
+          aria-label="重命名会话"
+          style={pageStyles.topIcon}
+          onClick={() => {
+            if (!activeId) return;
+            const next = window.prompt('会话名称', sessionTitle);
+            if (next && next.trim()) {
+              const title = next.trim().slice(0, 30);
+              void touch(activeId, title).then(() => {
+                // 改名同步上云（新建/删除都有 enqueue，改名原先漏了 → 多端标题不同步）
+                void getSyncSDK().enqueue({
+                  deviceId: getDeviceId(),
+                  entity: 'session',
+                  entityId: activeId,
+                  action: 'upsert',
+                  payload: { id: activeId, title },
+                });
+              });
+            }
+          }}
+        >
+          ✎
+        </button>
         <div style={pageStyles.topTitles}>
           <div style={pageStyles.titleMain}>{sessionTitle}</div>
           <div style={pageStyles.titleSub}>{remoteMode ? deviceLabel : '本机对话'}</div>
         </div>
-        <button type="button" aria-label="语音通话" style={pageStyles.topIcon} onClick={() => void doVoiceStart()}>📞</button>
+        <button
+          type="button"
+          aria-label="语音通话"
+          style={{ ...pageStyles.topIcon, color: recording ? '#e5484d' : undefined }}
+          onClick={() => void (recording ? doVoiceEnd() : doVoiceStart())}
+        >
+          📞
+        </button>
         <button
           type="button"
           aria-label="播报开关"
           style={{ ...pageStyles.topIcon, opacity: ttsOn ? 1 : 0.4 }}
-          onClick={() => void update({ ttsEnabled: !ttsOn })}
+          onClick={() => {
+            const next = !ttsOn;
+            if (!next) { stopSpeak(); setSpeaking(false); } // 关闭即刻静音（含排队句）
+            void update({ ttsEnabled: next });
+          }}
         >
           {ttsOn ? '🔊' : '🔇'}
         </button>
@@ -296,7 +397,7 @@ export function ChatPage(): React.ReactElement {
         <div ref={bottomRef} />
       </div>
 
-      <TtsStatus speaking={speaking} onStop={() => interrupt(getOrchestrator())} />
+      <TtsStatus speaking={speaking} onStop={() => { stopSpeak(); interrupt(getOrchestrator()); setSpeaking(false); }} />
       <Waveform level={level} active={recording} />
 
       {/* 底部工具条：设备 chip + 选择项目 + ⓘ */}
@@ -308,9 +409,47 @@ export function ChatPage(): React.ReactElement {
         <button type="button" style={pageStyles.infoBtn} aria-label="互通说明" onClick={() => nav('/settings')}>ⓘ</button>
       </div>
 
-      {/* 输入坞：[📷][发消息或按住说话][语音圆钮][＋] */}
+      {/* 隐藏文件选择器（📷/＋ 菜单共用） */}
+      <input
+        ref={fileRef}
+        type="file"
+        accept={pickAccept}
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          void (async () => {
+            const f = e.target.files?.[0];
+            e.target.value = ''; // 同一文件可重复选
+            if (!f) return;
+            setShowPlus(false);
+            if (remoteMode && remoteSdk.isConnected()) {
+              useChatStore.setState({ error: '' });
+              const r = await remoteSdk.sendFile(f);
+              if (!r.ok) useRemoteStore.getState().setPreempted('文件发送失败: ' + (r.reason || ''));
+            } else {
+              useChatStore.setState({ error: '附件需遥控模式：先在「设备」页连接电脑' });
+            }
+          })();
+        }}
+      />
+      {showPlus ? (
+        <div style={pageStyles.plusMenu}>
+          <button type="button" style={pageStyles.plusItem} onClick={() => { setPickAccept('image/*'); setTimeout(() => fileRef.current?.click(), 0); }}>📷 发送图片</button>
+          <button type="button" style={pageStyles.plusItem} onClick={() => { setPickAccept('*/*'); setTimeout(() => fileRef.current?.click(), 0); }}>📁 发送文件</button>
+          <button type="button" style={pageStyles.plusItem} onClick={() => {
+            setShowPlus(false);
+            if (!(remoteMode && remoteSdk.isConnected())) {
+              useChatStore.setState({ error: '截屏需遥控模式：先在「设备」页连接电脑' });
+              return;
+            }
+            void remoteSdk.send('screenshot', {}).catch(() => undefined);
+          }}>🖥 查看电脑屏幕</button>
+          <button type="button" style={pageStyles.plusItem} onClick={() => { setShowPlus(false); nav('/remote-tools'); }}>🛠 电脑工具遥控</button>
+          <button type="button" style={pageStyles.plusItem} onClick={() => { setShowPlus(false); nav('/remote-config'); }}>⚙ 电脑配置遥控</button>
+          <button type="button" style={{ ...pageStyles.plusItem, color: '#888' }} onClick={() => setShowPlus(false)}>取消</button>
+        </div>
+      ) : null}
       <div className="input-dock" style={pageStyles.dock}>
-        <button type="button" aria-label="拍照/图片" style={pageStyles.dockIcon} onClick={() => setShowPlus(!showPlus)}>📷</button>
+        <button type="button" aria-label="拍照/图片" style={pageStyles.dockIcon} onClick={() => { setPickAccept('image/*'); setTimeout(() => fileRef.current?.click(), 0); }}>📷</button>
         <input
           style={{ ...pageStyles.dockInput, ...(!online && !isMockMode() ? pageStyles.dockInputOff : {}) }}
           placeholder={recording ? '松开发送语音' : !online && !isMockMode() ? '离线，恢复后自动补发' : remoteMode ? '发消息控制电脑' : '发消息或按住说话'}
@@ -331,7 +470,18 @@ export function ChatPage(): React.ReactElement {
         >
           🎙
         </button>
-        <button type="button" aria-label="更多" style={pageStyles.dockIcon} onClick={() => void doSend(draft)}>＋</button>
+        <button
+          type="button"
+          aria-label="更多"
+          style={pageStyles.dockIcon}
+          onClick={() => {
+            // 有文本→发送；无文本→展开菜单（以前空文本静默「点了没反应」）
+            if (draft.trim()) void doSend(draft);
+            else setShowPlus(!showPlus);
+          }}
+        >
+          ＋
+        </button>
       </div>
 
       {sending && !remoteMode ? (
@@ -383,4 +533,6 @@ const pageStyles: Record<string, React.CSSProperties> = {
   dockMicOn: { background: '#e5484d' },
   thinking: { position: 'absolute', top: 56, left: '50%', transform: 'translateX(-50%)', fontSize: 12, background: 'rgba(0,0,0,0.5)', borderRadius: 999, padding: '4px 12px' },
   errBar: { position: 'absolute', top: 56, left: '50%', transform: 'translateX(-50%)', fontSize: 12, background: 'rgba(229,72,77,0.85)', border: 'none', borderRadius: 999, padding: '4px 12px', color: '#fff' },
+  plusMenu: { position: 'absolute', bottom: 70, left: 10, right: 10, background: '#241640', borderRadius: 12, padding: 6, zIndex: 20, display: 'flex', flexDirection: 'column', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' },
+  plusItem: { border: 'none', background: 'none', color: '#eee', textAlign: 'left', padding: '11px 14px', fontSize: 14, borderRadius: 8 },
 };
