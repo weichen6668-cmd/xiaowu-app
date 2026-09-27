@@ -14,6 +14,7 @@ export function SessionListPage(): React.ReactElement {
   const { list, loading, load, createSession, remove, setActive } = useSessionStore();
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [swipedId, setSwipedId] = useState<string | null>(null);
+  const swipeStartX = React.useRef(0);
 
   useEffect(() => {
     if (user) void load(user.userId);
@@ -81,16 +82,19 @@ export function SessionListPage(): React.ReactElement {
           <div
             key={s.id}
             className="relative overflow-hidden border-b border-white/5"
-            onTouchStart={() => setSwipedId(null)}
+            onTouchStart={(e) => {
+              swipeStartX.current = e.touches[0].clientX;
+              setSwipedId(null);
+            }}
           >
             <div
               className="flex items-center justify-between px-4 py-3 bg-[#12081f] transition-transform"
               style={{ transform: swipedId === s.id ? 'translateX(-88px)' : 'translateX(0)' }}
               onTouchMove={(e) => {
-                // 左滑露出删除（简化：水平位移 > 40px 判定）
-                const t = e.touches[0];
-                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                if (t.clientX - rect.left < -40) setSwipedId(s.id);
+                // 左滑露出删除：记录起点后水平位移 <-40px 判定（旧逻辑用元素左边界导致划不出来）
+                const dx = e.touches[0].clientX - swipeStartX.current;
+                if (dx < -40) setSwipedId(s.id);
+                else if (dx > 40) setSwipedId(null);
               }}
               onClick={() => {
                 setActive(s.id);
