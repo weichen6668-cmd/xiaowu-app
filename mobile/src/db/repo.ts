@@ -530,6 +530,20 @@ export const SyncCursor = {
   },
 };
 
+/** oplog lamport 游标（syncPull 增量拉取用；与 ISO 游标分槽互不干扰） */
+export const OplogCursor = {
+  async get(): Promise<number> {
+    const d = await openDb();
+    const rows = await d.query("select value from schema_meta where key = 'oplog_lamport'");
+    return rows.length ? Number(rows[0].value) || 0 : 0;
+  },
+
+  async set(lamport: number): Promise<void> {
+    const d = await openDb();
+    await d.run("insert or replace into schema_meta (key, value) values ('oplog_lamport', ?)", [String(Math.floor(lamport))]);
+  },
+};
+
 /** 标记 entities 已同步（dirty=0, last_synced_at=now） */
 export async function markSynced(table: 'sessions' | 'messages', ids: string[]): Promise<void> {
   const d = await openDb();
@@ -632,6 +646,13 @@ export const TrajectoryRepo = {
       [sessionId],
     );
     return rows.map(rowToTrajectory);
+  },
+
+  /** 按 id 全量查（LWW 合并用，不带 deleted 过滤） */
+  async getById(id: string): Promise<TrajectoryEntry | null> {
+    const d = await openDb();
+    const rows = await d.query('select * from trajectories where id = ?', [id]);
+    return rows.length ? rowToTrajectory(rows[0]) : null;
   },
 
   async upsertLocal(t: TrajectoryEntry): Promise<void> {
