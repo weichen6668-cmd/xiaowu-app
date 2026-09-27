@@ -19,7 +19,7 @@ function classifyNetErr(e: unknown): string {
   const msg = String((e as Error)?.message || e);
   if (name === 'TimeoutError' || name === 'AbortError' || /timeout|aborted/i.test(msg)) return '超时（5 秒未响应）';
   if (/Failed to fetch|NetworkError|ENOTFOUND|EAI_AGAIN|getaddrinfo|ECONNREFUSED|fetch failed/i.test(msg)) {
-    return 'DNS/网络不可达';
+    return '网络不可达（DNS/跨域拦截，非配置错误）';
   }
   return '网络错误：' + msg.slice(0, 80);
 }
