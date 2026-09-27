@@ -19,6 +19,7 @@ export type RemoteMessageCb = (msg: RemoteReply) => void;
 
 const RECONNECT_MS = 5000;
 const SEND_TIMEOUT_MS = 30 * 1000;
+const PRESENCE_INTERVAL_MS = 30 * 1000;
 
 export class RemoteSDK {
   private client: MqttClient | null = null;
@@ -27,6 +28,7 @@ export class RemoteSDK {
   private deviceId = '';
   private cbs: RemoteMessageCb[] = [];
   private pending = new Map<string, (r: RemoteReply) => void>();
+  private presenceTimer: ReturnType<typeof setInterval> | null = null;
 
   /** 连接 MQTT 并订阅 to-phone；成功后自动 ctrl_claim 抢占 */
   async connect(room: string, pairCode: string, deviceId = ''): Promise<{ ok: boolean; reason?: string }> {
@@ -52,6 +54,7 @@ export class RemoteSDK {
             this.emit({ type: 'deny', reqId: r.reqId || '', denied: true, reason: 'XW5005 遥控被抢占' });
           }
         });
+        this.startPresence(); // 30s 心跳：presence_ping → 桌面回 presence，驱动设备在线状态
         resolve({ ok: true });
       });
       client.on('message', (_topic, payload) => {
@@ -103,6 +106,54 @@ export class RemoteSDK {
     };
   }
 
+  /**
+   * 手机→电脑文件传输（file-start/file-chunk/file-end，服务端存 ~/xiaowu-uploads）。
+   * 256KB/片 + 片间 ≥120ms：服务端限流 10 req/s（XW5006），留足余量。
+   */
+  async sendFile(file: File): Promise<{ ok: boolean; reason?: string }> {
+    if (!this.isConnected()) return { ok: false, reason: 'XW5001 远程未连接' };
+    const CHUNK = 256 * 1024;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const toB64 = (part: Uint8Array): string => {
+      let s = '';
+      for (let i = 0; i < part.length; i += 0x8000) {
+        s += String.fromCharCode(...part.subarray(i, i + 0x8000));
+      }
+      return btoa(s);
+    };
+    const start = await this.send('file-start', {
+      name: file.name,
+      mime: file.type || 'application/octet-stream',
+      total: buf.length,
+    });
+    if (start.type === 'deny' || !start.ok) return { ok: false, reason: start.reason || 'file-start 被拒' };
+    const chunks = Math.max(1, Math.ceil(buf.length / CHUNK));
+    for (let idx = 0; idx < chunks; idx += 1) {
+      const part = buf.subarray(idx * CHUNK, Math.min((idx + 1) * CHUNK, buf.length));
+      const r = await this.send('file-chunk', { idx, data: toB64(part) });
+      if (r.type === 'deny' || !r.ok) return { ok: false, reason: r.reason || `file-chunk ${idx} 失败` };
+      if (idx < chunks - 1) await new Promise((res) => setTimeout(res, 120));
+    }
+    const end = await this.send('file-end', {});
+    return end.ok ? { ok: true } : { ok: false, reason: end.reason || 'file-end 失败' };
+  }
+
+  /** 30s presence 心跳：presence_ping → 桌面回 presence 载荷 → cmd-router 更新在线状态 */
+  private startPresence(): void {
+    this.stopPresence();
+    this.presenceTimer = setInterval(() => {
+      if (this.isConnected()) void this.send('presence_ping', {}).catch(() => undefined);
+    }, PRESENCE_INTERVAL_MS);
+    void this.send('presence_ping', {}).catch(() => undefined); // 连接即刻打一次，不用等 30s
+  }
+
+  private stopPresence(): void {
+    if (this.presenceTimer) {
+      clearInterval(this.presenceTimer);
+      this.presenceTimer = null;
+    }
+  }
+
   private emit(msg: RemoteReply): void {
     for (const cb of this.cbs) {
       try { cb(msg); } catch { /* 单订阅者异常不影响其他 */ }
@@ -113,7 +164,27 @@ export class RemoteSDK {
     return !!this.client && this.client.connected;
   }
 
+  /**
+   * 主动释放抢占（ctrl_release）——退出遥控 / 切设备 / 页面卸载时必须调用，
+   * 否则服务端一直认为本端持有遥控权，其他端会被 XW5005 卡住（历史 bug）。
+   */
+  async release(): Promise<void> {
+    if (!this.isConnected()) return;
+    try { await this.send('ctrl_release', { deviceId: this.deviceId }); } catch { /* 尽力而为 */ }
+  }
+
   disconnect(): void {
+    this.stopPresence();
+    // 断开前同步补发 ctrl_release（不等待回执）：server 收到即释放，避免抢占残留卡住其他端
+    if (this.client && this.client.connected && this.room && this.pairCode) {
+      try {
+        const auth = buildAuth(this.pairCode);
+        this.client.publish(
+          topicToPc(this.room),
+          JSON.stringify({ ...auth, cmd: 'ctrl_release', args: { deviceId: this.deviceId } }),
+        );
+      } catch { /* ignore */ }
+    }
     if (this.client) {
       try { this.client.end(true); } catch { /* ignore */ }
       this.client = null;
