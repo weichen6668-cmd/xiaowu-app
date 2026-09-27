@@ -9,7 +9,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { AvatarSpec } from '@xw/shared';
 import { useSettingsStore } from '../store/settingsStore';
 import { useAvatarStore } from '../store/avatarStore';
+import { useOverlayStore } from '../store/overlayStore';
 import { createFormRenderer, type FormRenderer } from '../avatar/form-renderers';
+import { setSnapshotProvider } from '../avatar/snapshot-registry';
 
 /** 内置默认 spec（无自定义形象时走 three 内置 GLB——由 ThreeStage.loadModel 承载） */
 const BUILTIN_SPEC: AvatarSpec = { form: '3d', kind: 'glb', uri: '/models/mage-a.glb', hash: 'builtin', scale: 1, offsetY: 0 };
@@ -71,6 +73,10 @@ export function AvatarStage({ height = 62, onGesture, onAvatarChange }: Props): 
         if (cancelled) { r.dispose(); return; }
         await r.mount(host);
         rendererRef.current = r;
+        // 注册帧快照源（悬浮窗贴图推送用）；换装/卸载自然切换
+        setSnapshotProvider(() => rendererRef.current?.snapshot() ?? null);
+        // 悬浮显示中换装：立即同步新形象帧（否则悬浮面仍显旧图/透明）
+        void useOverlayStore.getState().syncTexture();
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
       }
@@ -90,6 +96,7 @@ export function AvatarStage({ height = 62, onGesture, onAvatarChange }: Props): 
       cancelled = true;
       window.removeEventListener('xw.avatar.mouth', onMouth);
       window.removeEventListener('xw.avatar.clip', onClip);
+      setSnapshotProvider(null);
       const r = rendererRef.current;
       if (r) {
         try { r.unmount(); r.dispose(); } catch { /* noop */ }
