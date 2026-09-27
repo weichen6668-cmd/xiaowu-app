@@ -43,7 +43,9 @@ function buildBody(messages: Msg[], tools: ToolDef[] | undefined, stream: boolea
     model,
     messages,
     temperature: 0.8,
-    max_tokens: 1024,
+    // 推理型模型（mimo-v2.6-pro 等）的 reasoning 也吃 token 配额：
+    // 1024 会被思考耗尽 → content 空（实测 content:"" + reasoning_content 有值），故放宽到 4096
+    max_tokens: 4096,
   };
   if (stream) body.stream = true;
   if (tools && tools.length) {
