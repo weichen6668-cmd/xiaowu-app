@@ -8,20 +8,23 @@ import type { ProviderRow, UserConfig } from '@xw/shared';
 import { ConfigRepo } from '../db/repo';
 import { secureStore, SS_KEYS } from '../platform/secure-store';
 
-/** 默认配置（Q2/Q6：火山女声 xiaowu_female + DeepSeek 示例） */
+/** 默认配置：与桌面端 config.json 实际 active 对齐（LLM=mimo-v2.6-pro / ASR=硅基流动 XingChen / TTS=MiMo 白桦）。
+ * 三段各自独立可改（设置页 provider/baseURL/model/音色/key）；火山仅作可选项（需自填 appid）。 */
 export function defaultConfig(userId: string, deviceId: string): UserConfig {
   return {
     userId,
     deviceId,
     avatarModel: 'mage-a',
-    llmProvider: 'deepseek',
-    llmBaseUrl: 'https://api.deepseek.com/v1',
-    llmModel: 'deepseek-chat',
-    asrProvider: 'volc',
-    asrBaseUrl: 'https://openspeech.bytedance.com',
-    ttsProvider: 'volc',
-    ttsBaseUrl: 'https://openspeech.bytedance.com',
-    ttsVoice: 'xiaowu_female',
+    llmProvider: 'custom',
+    llmBaseUrl: 'https://apimimo.zaiyunding.com/v1',
+    llmModel: 'mimo-v2.6-pro',
+    asrProvider: 'openai',
+    asrBaseUrl: 'https://api.siliconflow.cn/v1',
+    asrModel: 'XingChenAGI/XingChenASR-V3.2-Ultra',
+    ttsProvider: 'mimo',
+    ttsBaseUrl: 'https://api.xiaomimimo.com/v1',
+    ttsModel: 'mimo-v2.5-tts',
+    ttsVoice: '白桦',
     ttsEnabled: true,
     lamportTs: 0,
     updatedAt: new Date().toISOString(),
@@ -40,8 +43,8 @@ interface SettingsState {
   clearApiKey(which: 'llm' | 'asr' | 'tts'): Promise<void>;
   /** 供 shared 客户端热读（每调即读） */
   llmRow(): ProviderRow;
-  asrRow(): ProviderRow;
-  ttsRow(): ProviderRow;
+  asrRow(): ProviderRow & { appid?: string; cluster?: string };
+  ttsRow(): ProviderRow & { appid?: string };
 }
 
 async function keyExists(which: 'llm' | 'asr' | 'tts'): Promise<boolean> {
@@ -95,28 +98,34 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   llmRow(): ProviderRow {
     const c = get().config;
     return {
-      provider: c?.llmProvider || 'deepseek',
-      baseURL: c?.llmBaseUrl || 'https://api.deepseek.com/v1',
-      model: c?.llmModel || 'deepseek-chat',
+      provider: c?.llmProvider || 'custom',
+      baseURL: c?.llmBaseUrl || 'https://apimimo.zaiyunding.com/v1',
+      model: c?.llmModel || 'mimo-v2.6-pro',
     };
   },
 
-  asrRow(): ProviderRow {
+  asrRow(): ProviderRow & { appid?: string; cluster?: string } {
     const c = get().config;
     return {
-      provider: c?.asrProvider || 'volc',
-      baseURL: c?.asrBaseUrl || 'https://openspeech.bytedance.com',
-      model: 'whisper-1',
+      provider: c?.asrProvider || 'openai',
+      baseURL: c?.asrBaseUrl || 'https://api.siliconflow.cn/v1',
+      // 空串 → 让 asr-client 各协议默认生效（mimo→mimo-v2.5-asr / openai→whisper-1）；
+      // 以前硬编码 'whisper-1' 会污染 mimo 分支（拿 whisper-1 调 MiMo 必失败）
+      model: c?.asrModel || '',
+      appid: c?.asrAppid || '',
+      cluster: c?.asrCluster || '',
     };
   },
 
-  ttsRow(): ProviderRow {
+  ttsRow(): ProviderRow & { appid?: string } {
     const c = get().config;
     return {
-      provider: c?.ttsProvider || 'volc',
-      baseURL: c?.ttsBaseUrl || 'https://openspeech.bytedance.com',
-      model: 'tts-1',
-      voice: c?.ttsVoice || 'xiaowu_female',
+      provider: c?.ttsProvider || 'mimo',
+      baseURL: c?.ttsBaseUrl || 'https://api.xiaomimimo.com/v1',
+      // 空串 → tts-client 各协议默认（mimo→mimo-v2.5-tts / openai→tts-1）
+      model: c?.ttsModel || '',
+      voice: c?.ttsVoice || '白桦',
+      appid: c?.ttsAppid || '',
     };
   },
 }));
