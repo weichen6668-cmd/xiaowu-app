@@ -5,7 +5,17 @@
  */
 import { create } from 'zustand';
 import { overlay, supported, type OverlayEvent, type OverlayForm } from '../platform/overlay';
+import { getAvatarSnapshot } from '../avatar/snapshot-registry';
 import { currentFps, onThermal, setManualTier, watchBattery, type PerfTier } from '../platform/perf-tier';
+
+/** 把当前 3D 舞台帧推给悬浮窗 GL 面（Q14 近似渲染；无快照源时静默跳过） */
+async function pushAvatarTexture(): Promise<void> {
+  const snap = getAvatarSnapshot();
+  if (!snap) return;
+  try {
+    await overlay.setTexture(snap.replace(/^data:image\/\w+;base64,/, ''));
+  } catch { /* 桥断开/服务未起：不影响主流程 */ }
+}
 
 interface OverlayState {
   /** 平台支持（Android true；iOS/Web false → UI 隐藏入口） */
@@ -22,6 +32,8 @@ interface OverlayState {
   miniSessionId: string | null;
   /** 最近事件（引导页验证用） */
   lastEvent: OverlayEvent | null;
+  /** 手动推当前 3D 帧贴图（AvatarStage 换装后调用；悬浮显示中才推） */
+  syncTexture(): Promise<void>;
   show(form?: OverlayForm): Promise<boolean>;
   hide(): Promise<void>;
   setForm(form: OverlayForm): Promise<void>;
@@ -32,23 +44,39 @@ interface OverlayState {
   attach(): () => void;
 }
 
+/** 形态偏好本地持久化（悬浮是本地形态，不同步 oplog；重启后 UI 与原生 prefs 一致） */
+const FORM_KEY = 'xw_overlay_form';
+function loadFormPref(): OverlayForm {
+  try {
+    return localStorage.getItem(FORM_KEY) === 'pet' ? 'pet' : 'ball';
+  } catch {
+    return 'ball';
+  }
+}
+
 export const useOverlayStore = create<OverlayState>((set, get) => ({
   supported: supported(),
   visible: false,
-  form: 'ball',
+  form: loadFormPref(),
   sizeDp: 120,
   powerSave: false,
   throttled: false,
   miniSessionId: null,
   lastEvent: null,
 
+  async syncTexture(): Promise<void> {
+    if (!get().visible) return;
+    await pushAvatarTexture();
+  },
+
   async show(form): Promise<boolean> {
     const f = form || get().form;
     const ok = await overlay.show(f, 100, 200, get().sizeDp);
     if (ok) {
       set({ visible: true, form: f });
-      // 显示后立即按当前档推 fps（perf-tier 联动）
+      // 显示后立即按当前档推 fps（perf-tier 联动）+ 推当前 3D 帧贴图（否则 GL 面采样空纹理→透明）
       await overlay.setFps(get().powerSave ? 8 : currentFps());
+      await pushAvatarTexture();
     }
     return ok;
   },
@@ -59,8 +87,13 @@ export const useOverlayStore = create<OverlayState>((set, get) => ({
   },
 
   async setForm(form): Promise<void> {
-    await overlay.setForm(form);
+    // 先落 UI 状态：原生 reject 不再把按钮卡成死键（服务未运行时原生只记形态）
     set({ form });
+    try { localStorage.setItem(FORM_KEY, form); } catch { /* ignore */ }
+    try {
+      await overlay.setForm(form);
+    } catch { /* 服务未运行/桥断开：形态已持久化，下次 show 生效 */ }
+    if (get().visible) await pushAvatarTexture();
   },
 
   async setSize(dp): Promise<void> {
