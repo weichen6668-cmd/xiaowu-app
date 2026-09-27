@@ -122,6 +122,11 @@ class OverlayService : Service() {
         showInternal(newForm, p.x, p.y, sizeDp)
     }
 
+    /** 贴图推送（WebView 3D 帧快照 → GL 面；Q14 近似渲染） */
+    fun setTextureB64(b64: String) {
+        petView?.setTextureB64(b64)
+    }
+
     fun setPosition(x: Int, y: Int) {
         val p = params ?: return
         p.x = x
@@ -259,9 +264,10 @@ class OverlayService : Service() {
                 else -> false
             }
         }
-        // ball 形态暂停 GL 动画（静态贴图，Q12 互斥活跃）；pet 恢复
+        // ball 形态暂停 GL 动画（静态贴图，Q12 互斥活跃）+ 圆形裁剪；pet 恢复全矩形面
+        pet.setBallMask(form == "ball")
         if (form == "ball") pet.pauseAnim() else pet.resumeAnim()
-        return Pair(frame, if (form == "pet") pet else pet) // 双形态共用 GL 面，ball 侧静态
+        return Pair(frame, pet) // 双形态共用 GL 面：球=圆形裁剪静态，桌宠=矩形动画
     }
 
     /** 拖动松手吸附最近屏幕边缘（FR-301） */
