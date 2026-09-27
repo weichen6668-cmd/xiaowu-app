@@ -233,7 +233,7 @@ export function SettingsPage(): React.ReactElement {
           <p className="mb-1 font-medium">LLM</p>
           <select
             className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs"
-            value={config?.llmProvider || 'deepseek'}
+            value={config?.llmProvider || 'custom'}
             onChange={(e) => patch({ llmProvider: e.target.value })}
           >
             <option value="deepseek">DeepSeek</option>
@@ -283,7 +283,7 @@ export function SettingsPage(): React.ReactElement {
           <p className="mb-1 font-medium">ASR</p>
           <select
             className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs"
-            value={config?.asrProvider || 'volc'}
+            value={config?.asrProvider || 'openai'}
             onChange={(e) => patch({ asrProvider: e.target.value })}
           >
             <option value="volc">火山</option>
@@ -296,6 +296,28 @@ export function SettingsPage(): React.ReactElement {
             value={config?.asrBaseUrl || ''}
             onChange={(e) => patch({ asrBaseUrl: e.target.value })}
           />
+          <input
+            className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs outline-none"
+            placeholder="ASR 模型（空=协议默认）"
+            value={config?.asrModel || ''}
+            onChange={(e) => patch({ asrModel: e.target.value })}
+          />
+          {(config?.asrProvider || 'openai') === 'volc' ? (
+            <div className="flex gap-2 mb-2">
+              <input
+                className="w-1/2 h-9 rounded bg-white/10 px-2 text-xs outline-none"
+                placeholder="火山 appid（必填）"
+                value={config?.asrAppid || ''}
+                onChange={(e) => patch({ asrAppid: e.target.value })}
+              />
+              <input
+                className="w-1/2 h-9 rounded bg-white/10 px-2 text-xs outline-none"
+                placeholder="cluster（默认 volcengine_streaming_common）"
+                value={config?.asrCluster || ''}
+                onChange={(e) => patch({ asrCluster: e.target.value })}
+              />
+            </div>
+          ) : null}
           {profiles.some((p) => p.kind === 'asr') ? (
             <select
               className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs"
@@ -327,7 +349,7 @@ export function SettingsPage(): React.ReactElement {
           <p className="mb-1 font-medium">TTS</p>
           <select
             className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs"
-            value={config?.ttsProvider || 'volc'}
+            value={config?.ttsProvider || 'mimo'}
             onChange={(e) => patch({ ttsProvider: e.target.value })}
           >
             <option value="volc">火山</option>
@@ -341,11 +363,26 @@ export function SettingsPage(): React.ReactElement {
             onChange={(e) => patch({ ttsBaseUrl: e.target.value })}
           />
           <input
-            className="w-full h-9 rounded bg-white/10 px-2 mb-3 text-xs outline-none"
-            placeholder="音色（默认 xiaowu_female）"
+            className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs outline-none"
+            placeholder="TTS 模型（空=协议默认）"
+            value={config?.ttsModel || ''}
+            onChange={(e) => patch({ ttsModel: e.target.value })}
+          />
+          {(config?.ttsProvider || 'mimo') === 'volc' ? (
+            <input
+              className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs outline-none"
+              placeholder="火山 appid（必填）"
+              value={config?.ttsAppid || ''}
+              onChange={(e) => patch({ ttsAppid: e.target.value })}
+            />
+          ) : null}
+          <input
+            className="w-full h-9 rounded bg-white/10 px-2 mb-1 text-xs outline-none"
+            placeholder="音色（默认 白桦）"
             value={config?.ttsVoice || ''}
             onChange={(e) => patch({ ttsVoice: e.target.value })}
           />
+          <p className="text-[10px] opacity-60 mb-3">克隆音色（如小狸）需电脑端配置后同步，手机端暂仅支持预置音色</p>
           {profiles.some((p) => p.kind === 'tts') ? (
             <select
               className="w-full h-9 rounded bg-white/10 px-2 mb-2 text-xs"
