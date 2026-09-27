@@ -2,15 +2,17 @@
  * SyncSDK（FR-108）：outbox 批量上行、启动增量拉取、指数退避、op_id 幂等。
  * LWW 合并（pull 用 sync-protocol.lwwWins）。
  */
-import type { DataBackend, Device, MemoryItem, Message, OplogEntry, Session, SyncSDK, TrajectoryEntry } from '@xw/shared';
+import type { DataBackend, Device, MemoryItem, Message, OplogEntry, Session, SyncSDK, TrajectoryEntry, UserConfig } from '@xw/shared';
 import { LamportClock, backoffMs, rowToOplog, lwwWins } from '@xw/shared';
 import {
   OutboxRepo,
   SyncCursor,
+  OplogCursor,
   SessionRepo,
   MessageRepo,
   MemoryRepo,
   TrajectoryRepo,
+  ConfigRepo,
   markSynced,
   findRow,
 } from '../db/repo';
@@ -93,17 +95,25 @@ export function createSyncSDK(deps: SyncDeps): SyncSDK & { getClock(): LamportCl
       for (;;) {
         const pending = await OutboxRepo.pending(20);
         if (!pending.length) break;
-        // 分组按 entity 批量
+        // 分组按 entity 批量：session/message 走 REST 材料化；
+        // user_config/memory/trajectory 走 oplog syncPush（原缺陷：全误路由 upsertConfig 只写 localStorage，从未上云）
         const byEntity: Record<string, Record<string, unknown>[]> = { sessions: [], messages: [] };
+        const oplogOps: OplogEntry[] = [];
         const opIds: string[] = [];
         for (const row of pending) {
           const op = rowToOplog(row, deps.deviceId);
           opIds.push(op.opId);
           const table = op.entity === 'session' ? 'sessions' : op.entity === 'message' ? 'messages' : null;
           if (!table) {
-            // user_config 单独走 upsertConfig（payload 即 UserConfig 行）
-            const cfg = op.payload as never;
-            await deps.backend.upsertConfig(cfg);
+            if (op.entity === 'user_config') {
+              // localStorage 镜像（离线读用）；真上云靠下方 syncPush
+              try { await deps.backend.upsertConfig(op.payload as never); } catch { /* 镜像失败不阻塞上行 */ }
+            }
+            if (op.action === 'delete') {
+              oplogOps.push({ ...op, payload: { ...(op.payload as Record<string, unknown>), deleted: true } });
+            } else {
+              oplogOps.push(op);
+            }
             continue;
           }
           if (op.action === 'delete') {
@@ -119,6 +129,12 @@ export function createSyncSDK(deps: SyncDeps): SyncSDK & { getClock(): LamportCl
               await deps.backend.upsertRows(table, byEntity[table]);
               await markSynced(table, byEntity[table].map((r) => String(r.id)));
             }
+          }
+          // oplog 上行（服务端 ENTITIES=user_config/memory/trajectory，op_id 幂等）
+          if (oplogOps.length) {
+            const be = deps.backend as unknown as { syncPush?: (ops: Record<string, unknown>[]) => Promise<unknown> };
+            if (be.syncPush) await be.syncPush(oplogOps as unknown as Record<string, unknown>[]);
+            else throw new Error('backend 不支持 syncPush，oplog 实体无法上行');
           }
           for (const id of opIds) await OutboxRepo.remove(id);
         } catch (e) {
@@ -155,18 +171,22 @@ export function createSyncSDK(deps: SyncDeps): SyncSDK & { getClock(): LamportCl
         }
       }
     }
-    // T04：memory / trajectory 合并分支（复用 lwwWins；oplog 新 API 可用时优先）
+    // T04：memory / trajectory / user_config 合并分支（复用 lwwWins；oplog 增量游标拉取）
     const be = deps.backend as unknown as {
       syncPull?: (sinceLamport: number) => Promise<{ ops: Record<string, unknown>[]; latest: number }>;
       listMemories?: () => Promise<Record<string, unknown>[]>;
     };
     if (be.syncPull) {
       try {
-        const { ops } = await be.syncPull(0);
+        // 增量拉取：since=oplog 游标（原缺陷 syncPull(0) 每次全量重拉）
+        const sinceLamport = await OplogCursor.get();
+        const { ops, latest } = await be.syncPull(sinceLamport);
+        let maxLamport = sinceLamport;
         for (const op of ops) {
           const entity = String(op.entity ?? '');
           const payload = (op.payload ?? {}) as Record<string, unknown>;
           const incomingMeta = { lamportTs: Number(op.lamportTs ?? 0), deviceId: String(op.deviceId ?? '') };
+          if (Number(op.lamportTs ?? 0) > maxLamport) maxLamport = Number(op.lamportTs);
           if (entity === 'memory') {
             const incoming = rowToMemory({ ...payload, id: op.entityId, device_id: op.deviceId, lamport_ts: op.lamportTs });
             const existing = await MemoryRepo.getById(incoming.id);
@@ -175,11 +195,36 @@ export function createSyncSDK(deps: SyncDeps): SyncSDK & { getClock(): LamportCl
               merged += 1;
             }
           } else if (entity === 'trajectory') {
+            // LWW 决胜（原缺陷：无条件覆盖，本机新轨迹会被旧远端冲掉）
             const incoming = rowToTrajectory({ ...payload, id: op.entityId, device_id: op.deviceId, lamport_ts: op.lamportTs });
-            await TrajectoryRepo.upsertRemote(incoming);
-            merged += 1;
+            const existing = await TrajectoryRepo.getById(incoming.id);
+            if (!existing || lwwWins(incomingMeta, { lamportTs: existing.lamportTs, deviceId: existing.deviceId })) {
+              await TrajectoryRepo.upsertRemote(incoming);
+              merged += 1;
+            }
+          } else if (entity === 'user_config') {
+            // 配置下行（原缺陷：pull 直接丢弃 user_config op）：LWW 后写 ConfigRepo + 刷新 store
+            const incomingMeta2 = incomingMeta;
+            const cfg = payload as unknown as { userId?: string; lamportTs?: number; deviceId?: string; updatedAt?: string; deviceIdLast?: string };
+            const userId = String(cfg.userId ?? '');
+            if (userId) {
+              const existing = await ConfigRepo.get(userId);
+              if (!existing || lwwWins(incomingMeta2, { lamportTs: existing.lamportTs, deviceId: existing.deviceId })) {
+                const next = {
+                  ...(cfg as object),
+                  userId,
+                  lamportTs: incomingMeta2.lamportTs,
+                  deviceId: cfg.deviceId ?? 'cloud',
+                  deviceIdLast: cfg.deviceId ?? 'cloud',
+                  updatedAt: cfg.updatedAt ?? new Date().toISOString(),
+                } as UserConfig;
+                await ConfigRepo.upsertRemote(next);
+                merged += 1;
+              }
+            }
           }
         }
+        await OplogCursor.set(Number(latest) > maxLamport ? Number(latest) : maxLamport);
       } catch (e) {
         log.warn('pull memory/trajectory skipped', e);
       }
