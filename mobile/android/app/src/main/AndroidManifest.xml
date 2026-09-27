@@ -3,6 +3,11 @@
 
     <!-- Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 语音输入/通话：WebView getUserMedia 需声明（缺声明时 permissionLauncher 直接拒绝→录音按钮无响应） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- 📷 拍照/图片选择 -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <!-- T06 桌面悬浮：悬浮窗（TYPE_APPLICATION_OVERLAY）/ 前台服务保活 / 静默通知 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
