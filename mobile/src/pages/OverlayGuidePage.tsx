@@ -30,15 +30,23 @@ export function OverlayGuidePage(): React.ReactElement {
   }, [supported]);
 
   const onReqPerm = async (): Promise<void> => {
-    const ov = await import('../platform/overlay');
-    await ov.overlay.requestOverlayPermission();
-    setMsg('请在系统设置中开启「显示在其他应用上层」，返回后点「已开启」');
+    try {
+      const ov = await import('../platform/overlay');
+      await ov.overlay.requestOverlayPermission();
+      setMsg('请在系统设置中开启「显示在其他应用上层」，返回后点「已开启」');
+    } catch (e) {
+      setMsg('❌ 打开系统设置失败：' + ((e as Error).message || String(e)).slice(0, 60) + '（可手动到系统设置开启）');
+    }
   };
 
   const onReqBattery = async (): Promise<void> => {
-    const ov = await import('../platform/overlay');
-    await ov.overlay.requestBatteryIgnore();
-    setMsg('请允许「忽略电池优化」，返回后点「已开启」');
+    try {
+      const ov = await import('../platform/overlay');
+      await ov.overlay.requestBatteryIgnore();
+      setMsg('请允许「忽略电池优化」，返回后点「已开启」');
+    } catch (e) {
+      setMsg('❌ 打开电池白名单失败：' + ((e as Error).message || String(e)).slice(0, 60) + '（可手动到系统设置开启）');
+    }
   };
 
   const onVerify = async (): Promise<void> => {
