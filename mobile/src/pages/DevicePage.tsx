@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDeviceStore } from '../store/deviceStore';
 import { useRemoteStore } from '../store/remoteStore';
+import { remoteSdk } from '../remote/remote-sdk';
 import PairDialog from '../components/PairDialog';
 
 function osIcon(os: string): string {
@@ -39,7 +40,11 @@ export default function DevicePage() {
     void refresh();
   }, [refresh]);
 
-  const connect = (d: typeof devices[number]) => {
+  const connect = async (d: typeof devices[number]) => {
+    // 切换到另一台电脑前先释放上一台的抢占权，否则旧设备一直被占用（XW5005）
+    if (remoteSdk.isConnected()) {
+      try { await remoteSdk.release(); } catch { /* 尽力而为 */ }
+    }
     setCurrent(d);
     setRemoteMode(true);
     navigate('/'); // 进入遥控会话（ChatPage）
