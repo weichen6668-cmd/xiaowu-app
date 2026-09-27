@@ -14,6 +14,8 @@ export interface FormRenderer {
   unmount(): void;
   setMouth(open: number): void;
   playClip(name: string): void;
+  /** 当前帧快照 dataURL（悬浮窗贴图源；不可快照返回 null） */
+  snapshot(): string | null;
   dispose(): void;
 }
 
@@ -72,6 +74,10 @@ class ThreeFormRenderer implements FormRenderer {
 
   playClip(name: string): void {
     this.stage?.playClip(name);
+  }
+
+  snapshot(): string | null {
+    return this.stage?.snapshot() ?? null;
   }
 
   dispose(): void {
@@ -145,6 +151,20 @@ class SpriteFormRenderer implements FormRenderer {
       setTimeout(() => {
         if (this.img) this.img.style.transform = '';
       }, 600);
+    }
+  }
+
+  snapshot(): string | null {
+    const img = this.img;
+    if (!img || !img.complete || !img.naturalWidth) return null;
+    try {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d')?.drawImage(img, 0, 0);
+      return c.toDataURL('image/png');
+    } catch {
+      return null;
     }
   }
 
@@ -228,6 +248,14 @@ class Live2dFormRenderer implements FormRenderer {
     this.model?.motion?.(name || 'Idle', 0);
   }
 
+  snapshot(): string | null {
+    try {
+      return this.pixiCanvas ? this.pixiCanvas.toDataURL('image/png') : null;
+    } catch {
+      return null;
+    }
+  }
+
   dispose(): void {
     this.unmount();
   }
@@ -289,6 +317,20 @@ class VideoFormRenderer implements FormRenderer {
   playClip(name: string): void {
     // 视频单 clip 循环；name 事件忽略（或由素材侧分段）
     void name;
+  }
+
+  snapshot(): string | null {
+    const v = this.video;
+    if (!v || !v.videoWidth) return null;
+    try {
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth;
+      c.height = v.videoHeight;
+      c.getContext('2d')?.drawImage(v, 0, 0);
+      return c.toDataURL('image/png');
+    } catch {
+      return null;
+    }
   }
 
   dispose(): void {
