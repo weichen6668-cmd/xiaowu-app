@@ -97,6 +97,10 @@ export function createAsrClient(
       // 火山一句话识别：header(JSON)+binary 音频
       const appid = a.appid || '';
       const cluster = a.cluster || 'volcengine_streaming_common';
+      if (!appid) {
+        // 以前静默带空 appid 发请求 → 服务端必拒且报错难懂。缺配置直接中文报错上屏
+        throw new Error('火山 ASR 未配置 appid：请到设置页填写（或切换其他 ASR 协议）');
+      }
       const url = 'https://openspeech.bytedance.com/api/v1/auc/get_one_sentence_recognition';
       const body = {
         app: { appid, token, cluster },
