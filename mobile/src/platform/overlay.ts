@@ -16,7 +16,8 @@ export interface OverlayEvent {
 interface OverlayNative {
   show(opts: { form: OverlayForm; x: number; y: number; size: number }): Promise<{ shown: boolean }>;
   hide(): Promise<{ shown: boolean }>;
-  setForm(opts: { form: OverlayForm }): Promise<{ form: string }>;
+  setForm(opts: { form: OverlayForm }): Promise<{ form: string; shown?: boolean }>;
+  setTexture(opts: { b64: string }): Promise<void>;
   expandMini(): Promise<{ expanded: boolean }>;
   setPosition(opts: { x: number; y: number }): Promise<{ x: number; y: number }>;
   isShown(): Promise<{ shown: boolean }>;
@@ -64,6 +65,12 @@ export const overlay = {
   async setForm(form: OverlayForm): Promise<void> {
     if (!native) return noop();
     await native.setForm({ form });
+  },
+
+  /** 推贴图（WebView 3D 帧快照 base64 → GL 面；服务未运行时静默跳过） */
+  async setTexture(b64: string): Promise<void> {
+    if (!native || !b64) return noop();
+    await native.setTexture({ b64 });
   },
 
   /** 球点开 = 迷你对话/语音窗（JS 侧渲染迷你层） */
