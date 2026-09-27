@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "generated": "T08-avatar-forms",
+  "note": "内置形象清单（设计稿 05 T08）。id 为稳定键；hash=sha256 前 16 hex（同内容占位复制时可重复，仅作参考/去重键）。自定义形象存 IndexedDB 不进本清单。",
+  "builtins": [
+    {
+      "id": "mage-a",
+      "name": "小巫A",
+      "form": "3d",
+      "kind": "glb",
+      "uri": "models/mage-a.glb",
+      "hash": "755bd6bc52279aaa",
+      "bytes": 7488940,
+      "scale": 1.0,
+      "offsetY": 0,
+      "clipMap": { "idle": "Idle", "talk": "Talk", "wave": "Wave", "nod": "Nod" }
+    },
+    {
+      "id": "mage-b",
+      "name": "小巫B",
+      "form": "3d",
+      "kind": "glb",
+      "uri": "models/mage-b.glb",
+      "hash": "755bd6bc52279aaa",
+      "bytes": 7488940,
+      "scale": 1.0,
+      "offsetY": 0,
+      "clipMap": { "idle": "Idle", "talk": "Talk", "wave": "Wave", "nod": "Nod" }
+    }
+  ],
+  "forms": ["3d", "2d", "live2d", "video"],
+  "limits": {
+    "glb": 15728640,
+    "gltf": 15728640,
+    "fbx": 20971520,
+    "vrm": 31457280,
+    "png": 5242880,
+    "webm": 52428800,
+    "webmMaxSeconds": 30
+  },
+  "q10Notice": "Live2D 仅支持用户自备的、已获 Live2D 准会员/商用授权的模型，授权责任由使用者自负。",
+  "q14DesktopMapping": {
+    "3d": "tinted-builtin-glb",
+    "2d": "avatarSkin:portrait",
+    "live2d": "default-3d",
+    "video": "avatarSkin:portrait"
+  }
+}
