@@ -4,7 +4,7 @@
  * 全部 CRUD 走 @capacitor-community/sqlite；Web 预览下走内存 Map 降级（dev/mock 可跑）。
  */
 import type { LocalOutbox, MemoryItem, Message, Session, TrajectoryEntry, UserConfig } from '@xw/shared';
-import { SCHEMA_VERSION, allDdl } from './schema';
+import { SCHEMA_VERSION, allDdl, MIGRATIONS } from './schema';
 
 type SqlRow = Record<string, unknown>;
 
@@ -195,6 +195,12 @@ export async function openDb(): Promise<SqlExec> {
       for (const ddl of allDdl()) {
         await db.run(ddl);
       }
+      // v3 增量：旧库补列（已存在则抛 duplicate column，逐条吞掉）
+      for (const sql of MIGRATIONS) {
+        try {
+          await db.run(sql);
+        } catch { /* 列已存在 */ }
+      }
       await db.run('insert or replace into schema_meta (key, value) values (?, ?)', [
         'version',
         String(SCHEMA_VERSION),
@@ -208,6 +214,11 @@ export async function openDb(): Promise<SqlExec> {
   db = memFallback;
   for (const ddl of allDdl()) {
     await db.run(ddl);
+  }
+  for (const sql of MIGRATIONS) {
+    try {
+      await db.run(sql);
+    } catch { /* 列已存在 */ }
   }
   return db;
 }
@@ -261,14 +272,19 @@ function rowToConfig(r: SqlRow): UserConfig {
     userId: String(r.user_id),
     deviceId: String(r.device_id ?? ''),
     avatarModel: String(r.avatar_model ?? 'mage-a') as 'mage-a' | 'mage-b',
-    llmProvider: String(r.llm_provider ?? 'deepseek'),
+    llmProvider: String(r.llm_provider ?? 'custom'),
     llmBaseUrl: String(r.llm_base_url ?? ''),
     llmModel: String(r.llm_model ?? ''),
-    asrProvider: String(r.asr_provider ?? 'volc'),
+    asrProvider: String(r.asr_provider ?? 'openai'),
     asrBaseUrl: String(r.asr_base_url ?? ''),
-    ttsProvider: String(r.tts_provider ?? 'volc'),
+    asrModel: r.asr_model == null ? '' : String(r.asr_model),
+    asrAppid: r.asr_appid == null ? '' : String(r.asr_appid),
+    asrCluster: r.asr_cluster == null ? '' : String(r.asr_cluster),
+    ttsProvider: String(r.tts_provider ?? 'mimo'),
     ttsBaseUrl: String(r.tts_base_url ?? ''),
-    ttsVoice: String(r.tts_voice ?? 'xiaowu_female'),
+    ttsModel: r.tts_model == null ? '' : String(r.tts_model),
+    ttsAppid: r.tts_appid == null ? '' : String(r.tts_appid),
+    ttsVoice: String(r.tts_voice ?? '白桦'),
     ttsEnabled: r.tts_enabled == null ? true : Number(r.tts_enabled) !== 0,
     lamportTs: Number(r.lamport_ts ?? 0),
     updatedAt: String(r.updated_at ?? nowIso()),
@@ -441,9 +457,10 @@ export const ConfigRepo = {
     await d.run(
       `insert or replace into user_config
        (user_id, device_id, avatar_model, llm_provider, llm_base_url, llm_model,
-        asr_provider, asr_base_url, tts_provider, tts_base_url, tts_voice, tts_enabled,
+        asr_provider, asr_base_url, asr_model, asr_appid, asr_cluster,
+        tts_provider, tts_base_url, tts_model, tts_appid, tts_voice, tts_enabled,
         lamport_ts, updated_at, device_id_last, dirty)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         cfg.userId,
         cfg.deviceId,
@@ -453,8 +470,13 @@ export const ConfigRepo = {
         cfg.llmModel,
         cfg.asrProvider,
         cfg.asrBaseUrl,
+        cfg.asrModel || '',
+        cfg.asrAppid || '',
+        cfg.asrCluster || '',
         cfg.ttsProvider,
         cfg.ttsBaseUrl,
+        cfg.ttsModel || '',
+        cfg.ttsAppid || '',
         cfg.ttsVoice,
         cfg.ttsEnabled === false ? 0 : 1,
         cfg.lamportTs,
