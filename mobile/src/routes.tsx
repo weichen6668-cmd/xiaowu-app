@@ -12,6 +12,8 @@ import { SettingsPage } from './pages/SettingsPage';
 import { ModelPickPage } from './pages/ModelPickPage';
 import DevicePage from './pages/DevicePage';
 import { OverlayGuidePage } from './pages/OverlayGuidePage';
+import { RemoteToolsPage } from './pages/RemoteToolsPage';
+import { RemoteConfigPage } from './pages/RemoteConfigPage';
 
 function RequireAuth({ children }: { children: React.ReactElement }): React.ReactElement {
   const user = useAuthStore((s) => s.user);
@@ -69,6 +71,22 @@ export function AppRoutes(): React.ReactElement {
         element={
           <RequireAuth>
             <OverlayGuidePage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/remote-tools"
+        element={
+          <RequireAuth>
+            <RemoteToolsPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/remote-config"
+        element={
+          <RequireAuth>
+            <RemoteConfigPage />
           </RequireAuth>
         }
       />
